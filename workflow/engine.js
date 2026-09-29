@@ -255,6 +255,16 @@ export function createWorkflow({ now = () => Date.now(), maxQaAttempts = 3 } = {
     return task;
   });
 
+  /** The working agent reports what it is doing right now (short text); status and stage are unchanged. */
+  const reportProgress = command((ctx, taskId, { action } = {}) => {
+    required(action, 'action');
+    const task = openTask(taskId);
+    const agent = working(task);
+    setAgent(agent, ctx.at, { action });
+    ctx.emit('agent_progress', taskId, { agent: clone(agent) });
+    return task;
+  });
+
   /** Explicit abort from any open stage (e.g. Operations cancels, or a stage can't be completed). */
   const failTask = command((ctx, taskId, { reason, meta = null } = {}) => {
     required(reason, 'reason');
@@ -265,7 +275,7 @@ export function createWorkflow({ now = () => Date.now(), maxQaAttempts = 3 } = {
   });
 
   return {
-    createTask, startWork, wait, block, completeStage, qaPass, qaFail, failTask,
+    createTask, startWork, wait, block, reportProgress, completeStage, qaPass, qaFail, failTask,
     /** Subscribe to events; returns an unsubscribe function. */
     on: (fn) => emitter.on(fn),
     getTask: (id) => clone(taskOf(id)),

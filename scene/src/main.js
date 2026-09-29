@@ -13,6 +13,7 @@ import { createSky, HAZE } from './sky.js';
 import { createHandoffPaths } from './handoff-paths.js';
 import { createWorkflowVisuals, createSample } from './workflow-visuals.js';
 import { createDemoDriver } from './workflow-demo.js';
+import { connectWorkflow } from './workflow-client.js';
 import { createOverlay } from './overlay.js';
 import { connectStats } from './stats-client.js';
 import { demoStats } from './demo.js';
@@ -68,10 +69,12 @@ const overlay = createOverlay(overlayEl);
 // Two separate inputs, never mixed:
 // - collector stats (overall Claude telemetry) → the HUD, and the background city's subtle windows;
 // - workflow events (ATLAS roles/tasks) → the four landmarks and the handoff paths.
-// There is no real workflow source yet, so outside demo mode the landmarks rest at their idle baseline.
+// Outside demo mode the landmarks follow the one authoritative ATLAS runtime (in the collector);
+// with no task running they rest at their idle baseline.
 const visuals = createWorkflowVisuals();
 const visual = createSample();
 const workflowDemo = P.workflowDemo ? createDemoDriver(visuals) : null;
+if (!workflowDemo) connectWorkflow(visuals);
 // Animation time is the wall clock (shared by every display), optionally shifted for review.
 const clockOffset = workflowDemo && P.demoAt >= 0 ? P.demoAt * 1000 - (Date.now() % workflowDemo.periodMs) : 0;
 const frozenAt = P.freeze && workflowDemo && P.demoAt >= 0 ? Date.now() + clockOffset : null;

@@ -359,3 +359,16 @@ test('unsubscribe stops delivery', () => {
   wf.createTask(TASK);
   assert.deepEqual(seen, ['task_created', 'agent_assigned']);
 });
+
+test('reportProgress: the working agent updates its action text only', () => {
+  const { wf, since, events } = setup();
+  const { id } = wf.createTask(TASK);
+  rejects(() => wf.reportProgress(id, { action: 'reading' }), 'agent_not_working'); // assigned, not started
+  wf.startWork(id, { action: 'scoping' });
+  rejects(() => wf.reportProgress(id, {}), 'invalid_input');
+  const n = events.length;
+  const t = wf.reportProgress(id, { action: 'reading README.md' });
+  assert.deepEqual(since(n), ['agent_progress']);
+  assert.equal(events.at(-1).payload.agent.action, 'reading README.md');
+  assert.deepEqual([wf.getAgent('operations').status, t.stage], ['working', 'planning'], 'status and stage unchanged');
+});

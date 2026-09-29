@@ -8,10 +8,11 @@ const TYPES = {
 };
 
 /**
- * GET /stats (JSON), GET /events (SSE), /workflow/* static files from `workflowDir` (the pure
- * workflow modules the scene imports), everything else a static file from `sceneDir`.
+ * GET /stats (JSON), GET /events (SSE), anything `routes` claims (the orchestration API), /workflow/*
+ * static files from `workflowDir` (the pure workflow modules the scene imports), everything else a
+ * static file from `sceneDir`.
  */
-export function createServer({ getStats, sceneDir, workflowDir }) {
+export function createServer({ getStats, sceneDir, workflowDir, routes = null }) {
   const sceneRoot = sceneDir ? path.resolve(sceneDir) : null;
   const workflowRoot = workflowDir ? path.resolve(workflowDir) : null;
   const clients = new Set();
@@ -28,6 +29,7 @@ export function createServer({ getStats, sceneDir, workflowDir }) {
       req.on('close', () => clients.delete(res));
       return;
     }
+    if (routes && routes(req, res, url)) return; // e.g. the orchestration API under /api/
     const underWorkflow = url.pathname.startsWith('/workflow/');
     const root = underWorkflow ? workflowRoot : sceneRoot;
     if (!root) { res.writeHead(404); return res.end(); }

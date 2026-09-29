@@ -12,6 +12,7 @@ export const EVENT_TYPES = Object.freeze([
   'agent_waiting',
   'agent_blocked',
   'agent_idle',
+  'agent_progress',
   'handoff_started',
   'handoff_completed',
   'qa_passed',

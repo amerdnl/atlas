@@ -87,7 +87,7 @@ export function createWorkflowVisuals() {
     lastSeq = event.seq;
     const p = event.payload;
     switch (event.type) {
-      case 'agent_assigned': case 'agent_started': case 'agent_waiting': case 'agent_blocked': case 'agent_idle': {
+      case 'agent_assigned': case 'agent_started': case 'agent_waiting': case 'agent_blocked': case 'agent_idle': case 'agent_progress': {
         const role = p.agent.role;
         const r = roles[role];
         if (!r) return;
@@ -97,7 +97,7 @@ export function createWorkflowVisuals() {
           if (incoming) at = Math.max(at, incoming.startedAt + TIMING.travelMs); // light up when the point arrives
           r.notBefore = at;
         }
-        const text = event.type === 'agent_started' ? p.agent.action : event.type === 'agent_waiting' || event.type === 'agent_blocked' ? p.reason : null;
+        const text = event.type === 'agent_started' || event.type === 'agent_progress' ? p.agent.action : event.type === 'agent_waiting' || event.type === 'agent_blocked' ? p.reason : null;
         push(role, event, p.agent.status, text, at);
         return;
       }
@@ -177,7 +177,18 @@ export function createWorkflowVisuals() {
     return { changes, paths: paths.map((p) => ({ ...p })) };
   }
 
-  return { apply, sample, reset, timeline };
+  /**
+   * Start from a workflow snapshot (each agent's current status since `since`). Used when a
+   * subscriber connects: the events replayed after it add the history and in-flight animations.
+   */
+  function seed(snapshot) {
+    for (const a of snapshot?.agents ?? []) {
+      if (!roles[a.role] || a.status === 'idle') continue;
+      push(a.role, { seq: 0, taskId: a.taskId }, a.status, a.action, a.since);
+    }
+  }
+
+  return { apply, sample, reset, seed, timeline };
 }
 
 /** Preallocated sample output, reused every frame. */
