@@ -1,0 +1,68 @@
+{
+  "fps": 60,
+  "seconds": 30,
+  "tokensAtStart": 184203117,
+  "note": "Stats the fake collector serves during the capture, keyed by film seconds. Each entry holds until the next.",
+  "stats": [
+    {
+      "t": 0,
+      "working": 0,
+      "subagents": 0,
+      "tokensPerMin": 0
+    },
+    {
+      "t": 4.5,
+      "working": 1,
+      "subagents": 0,
+      "tokensPerMin": 38000
+    },
+    {
+      "t": 9,
+      "working": 1,
+      "subagents": 1,
+      "tokensPerMin": 67000
+    },
+    {
+      "t": 10,
+      "working": 1,
+      "subagents": 2,
+      "tokensPerMin": 96000
+    },
+    {
+      "t": 11,
+      "working": 1,
+      "subagents": 3,
+      "tokensPerMin": 125000
+    },
+    {
+      "t": 12,
+      "working": 1,
+      "subagents": 4,
+      "tokensPerMin": 154000
+    },
+    {
+      "t": 13,
+      "working": 1,
+      "subagents": 5,
+      "tokensPerMin": 183000
+    },
+    {
+      "t": 14,
+      "working": 1,
+      "subagents": 6,
+      "tokensPerMin": 212000
+    },
+    {
+      "t": 20,
+      "working": 1,
+      "subagents": 0,
+      "tokensPerMin": 41000
+    },
+    {
+      "t": 21.5,
+      "working": 0,
+      "subagents": 0,
+      "tokensPerMin": 0
+    }
+  ]
+}

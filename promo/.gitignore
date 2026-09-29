@@ -1,0 +1,6 @@
+node_modules/
+footage/
+out/
+public/*.mp4
+public/audio/
+.venv/

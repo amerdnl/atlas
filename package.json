@@ -1,0 +1,9 @@
+{
+  "name": "agent-city",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test 'collector/test/*.test.js' 'scene/test/*.test.js'",
+    "dev": "node collector/index.js --scene scene"
+  }
+}

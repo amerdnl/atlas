@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>agent-city</title>
+  <link rel="stylesheet" href="style.css">
+  <script type="importmap">
+    { "imports": { "three": "./vendor/three/three.module.js", "three/addons/": "./vendor/three/addons/" } }
+  </script>
+</head>
+<body>
+  <div id="overlay" hidden>
+    <div class="stat"><div class="label">Projects</div><div class="value" data-k="projects">0</div></div>
+    <div class="stat"><div class="label">Agents</div><div class="value" data-k="agents">0</div><div class="sub" data-k="agentsSub">idle</div></div>
+    <div class="stat"><div class="label">Tokens today</div><div class="value" data-k="tokens">0</div><div class="sub" data-k="rate"></div></div>
+  </div>
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>
