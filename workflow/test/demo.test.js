@@ -22,6 +22,7 @@ test('demo: "Add authentication" fails QA once, is reworked, passes and is deliv
     'operations→research', 'research→developer', 'developer→qa', 'qa→developer', 'developer→qa', 'qa→operations',
   ]);
   assert.ok(types.includes('agent_waiting'), 'the demo exercises a waiting agent');
+  assert.ok(types.includes('agent_blocked'), 'the demo exercises a blocked agent');
   assert.equal(types.at(-1), 'task_completed');
   assert.ok(wf.listAgents().every((a) => a.status === 'idle'));
 });
@@ -34,8 +35,13 @@ test('demo: deterministic, and the happy path works with no QA failures', () => 
   assert.equal(run(2).task.qaResults.length, 3);
 });
 
-test('demo steps name the role acting at each step', () => {
+test('demo steps name the acting role and the kind of command they issue', () => {
   const roles = new Set(demoSteps().map((s) => s.role));
   assert.deepEqual([...roles].sort(), ['developer', 'operations', 'qa', 'research']);
-  for (const s of demoSteps()) assert.equal(typeof s.label, 'string');
+  const KINDS = ['create', 'start', 'wait', 'block', 'handoff', 'qaFail', 'qaPass', 'close'];
+  for (const s of demoSteps()) {
+    assert.equal(typeof s.label, 'string');
+    assert.ok(KINDS.includes(s.kind), s.kind);
+  }
+  assert.deepEqual(demoSteps({ qaFailures: 0 }).map((s) => s.kind).filter((k) => k !== 'start'), ['create', 'handoff', 'wait', 'handoff', 'handoff', 'qaPass', 'close']);
 });

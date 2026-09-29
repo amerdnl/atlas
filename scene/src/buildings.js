@@ -3,9 +3,13 @@ import * as THREE from 'three';
 /**
  * Buildings as one instanced box mesh: solid dark volumes with faint face shading (so they read as
  * forms, not flat blobs), sparse window lights, and depth fog into the horizon haze. Windows near
- * the camera fade out so the foreground reads as silhouette. An instance may carry `accent` (a
- * color): a few of its upper-floor windows then glow in that color — used by the ATLAS landmarks,
- * so they share the city's architecture instead of looking like separate objects.
+ * the camera fade out so the foreground reads as silhouette.
+ *
+ * An instance may carry `accent` (a color) and `roleIndex` (0–3): it is then an ATLAS landmark,
+ * lit by its role's live channels in `uRole[roleIndex]` = (level, working flow, waiting pulse, —).
+ * Its upper-floor windows power on one by one as the level rises, a slow upward wave moves through
+ * them while working, and a faint reflected color rises on the upper facade. `uClock` is
+ * wall-clock seconds within the hour (every period divides 3600), so all displays stay in phase.
  */
 export function createBuildings(list, { haze, fog, nearDark = [0, 0] }) {
   const n = list.length;
@@ -18,14 +22,18 @@ export function createBuildings(list, { haze, fog, nearDark = [0, 0] }) {
     uWall: { value: new THREE.Color(0x141924) }, uRoof: { value: new THREE.Color(0x161b27) },
     uFogColor: { value: new THREE.Color(haze) }, uFogNear: { value: fog.near }, uFogFar: { value: fog.far },
     uNearDark: { value: new THREE.Vector2(...nearDark) },
+    uRole: { value: Array.from({ length: 4 }, () => new THREE.Vector4()) }, uClock: { value: 0 },
   };
   const mat = new THREE.ShaderMaterial({
     uniforms,
     vertexShader: /* glsl */`
       attribute float aSeed; attribute vec3 aSize; attribute vec4 aAccent;
+      uniform vec4 uRole[4];
       varying vec3 vLocal; varying vec3 vN; varying vec3 vWN; varying float vSeed; varying vec3 vSize;
-      varying float vDepth; varying vec4 vAccent;
+      varying float vDepth; varying vec4 vAccent; varying vec4 vRole;
       void main() {
+        int ri = int(aAccent.a + 0.5) - 1;
+        vRole = ri >= 0 && ri < 4 ? uRole[ri] : vec4(0.0);
         vLocal = (position + vec3(0.5, 0.0, 0.5)) * aSize;
         vN = normal;
         vWN = normalize(mat3(modelMatrix) * mat3(instanceMatrix) * normal);
@@ -35,9 +43,9 @@ export function createBuildings(list, { haze, fog, nearDark = [0, 0] }) {
         gl_Position = projectionMatrix * mv;
       }`,
     fragmentShader: /* glsl */`
-      uniform float uActivity; uniform vec3 uWall, uRoof, uFogColor; uniform float uFogNear, uFogFar; uniform vec2 uNearDark;
+      uniform float uActivity, uClock; uniform vec3 uWall, uRoof, uFogColor; uniform float uFogNear, uFogFar; uniform vec2 uNearDark;
       varying vec3 vLocal; varying vec3 vN; varying vec3 vWN; varying float vSeed; varying vec3 vSize;
-      varying float vDepth; varying vec4 vAccent;
+      varying float vDepth; varying vec4 vAccent; varying vec4 vRole;
       float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
       void main() {
         float grad = 0.8 + 0.35 * clamp(vLocal.y / 120.0, 0.0, 1.0);
@@ -62,11 +70,17 @@ export function createBuildings(list, { haze, fog, nearDark = [0, 0] }) {
           vec3 warm = vec3(1.0, 0.74, 0.46), cool = vec3(0.74, 0.84, 1.0);
           vec3 wc = mix(warm, cool, step(0.72, hash(cell.yx + vSeed))) * (0.32 + 0.22 * hash(cell * 1.9 + vSeed));
           if (vAccent.a > 0.0) {
+            float level = vRole.x, flow = vRole.y, waiting = vRole.z;
             float yf = vLocal.y / vSize.y;
-            col += vAccent.rgb * 0.014 * smoothstep(0.25, 1.0, yf); // faint reflected color, upper facade only
-            float band = step(0.52, yf) * step(yf, 0.86);
-            float accLit = step(hash(cell * 1.7 + vSeed * 5.0), 0.2) * band * win;
-            col = mix(col, vAccent.rgb * 0.62 * vAccent.a, accLit);
+            col += vAccent.rgb * (0.004 + 0.02 * level) * smoothstep(0.25, 1.0, yf); // faint reflected color, upper facade
+            float band = step(0.5, yf) * step(yf, 0.88);
+            float r2 = hash(cell * 1.7 + vSeed * 5.0);
+            float on = smoothstep(r2, r2 + 0.08, 0.08 + 0.38 * level); // each window fades on at its own threshold
+            float wave = 0.5 + 0.5 * sin(6.2831853 * (uClock / 6.0 - yf * 0.9 - r2 * 0.35));
+            float breathe = 0.5 + 0.5 * sin(6.2831853 * uClock / 9.0);
+            float motion = 1.0 + flow * (wave - 0.5) * 0.55 + waiting * (breathe - 0.5) * 0.3;
+            float accLit = on * band * win;
+            col = mix(col, vAccent.rgb * (0.2 + 0.5 * level) * motion, accLit);
             lit *= 1.0 - accLit;
           }
           col = mix(col, wc, lit);
@@ -83,7 +97,7 @@ export function createBuildings(list, { haze, fog, nearDark = [0, 0] }) {
     mesh.setMatrixAt(i, m.compose(pos.set(b.x, 0, b.z), q, scl.set(b.w, b.h, b.d)));
     seeds[i] = b.seed;
     sizes.set([b.w, b.h, b.d], i * 3);
-    if (b.accent != null) { c.set(b.accent); accents.set([c.r, c.g, c.b, 1], i * 4); }
+    if (b.accent != null) { c.set(b.accent); accents.set([c.r, c.g, c.b, (b.roleIndex ?? 0) + 1], i * 4); }
   });
   geo.setAttribute('aSeed', new THREE.InstancedBufferAttribute(seeds, 1));
   geo.setAttribute('aSize', new THREE.InstancedBufferAttribute(sizes, 3));

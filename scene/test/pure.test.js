@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import { activityLevel, pulseLevel, districtOf, districtBoosts, easeToward } from '../src/activity.js';
 import { readParams } from '../src/params.js';
 import { generateCity } from '../src/city.js';
-import { formatStats } from '../src/format.js';
+import { formatCompact, formatHud, hudValues } from '../src/format.js';
 import { demoStats } from '../src/demo.js';
-import { LAYOUTS, LANDMARK, labelWidthPx, pickLayout } from '../src/layouts.js';
+import { LAYOUTS, LANDMARK, labelWidthPx, labelHeightPx, statusText, pickLayout } from '../src/layouts.js';
 import { ATLAS_AREAS } from '../src/atlas-areas.js';
 import * as THREE from '../vendor/three/three.module.js';
 
@@ -41,10 +41,21 @@ test('easeToward converges', () => {
 
 test('readParams defaults to the window and reads slices', () => {
   assert.deepEqual(readParams('', { w: 800, h: 600 }),
-    { fullW: 800, fullH: 600, x: 0, y: 0, w: 800, h: 600, fps: 60, overlay: true, demo: false, seed: 7, forceActivity: -1, layout: null });
+    { fullW: 800, fullH: 600, x: 0, y: 0, w: 800, h: 600, fps: 60, overlay: true, demo: false, seed: 7, forceActivity: -1, layout: null, workflowDemo: false, demoAt: -1, freeze: false });
   const p = readParams('?fullW=5760&fullH=1080&x=1920&y=0&w=1920&h=1080&fps=30&overlay=0&demo=1', { w: 1, h: 1 });
   assert.equal(p.fullW, 5760); assert.equal(p.x, 1920); assert.equal(p.fps, 30);
   assert.equal(p.overlay, false); assert.equal(p.demo, true);
+  assert.equal(p.workflowDemo, true, 'app Demo mode also plays the workflow demo');
+  const w = readParams('?workflow=demo&demoAt=42', { w: 1, h: 1 });
+  assert.deepEqual([w.demo, w.workflowDemo, w.demoAt], [false, true, 42], 'workflow demo alone keeps real HUD stats');
+});
+
+test('status line text is single-line and truncated for the label block', () => {
+  assert.equal(statusText('running tests'), 'running tests');
+  assert.equal(statusText('  reading\n requirements '), 'reading requirements');
+  const long = statusText('Implementing sign-in, sign-out and session middleware');
+  assert.ok(long.length <= LANDMARK.statusPx.maxChars && long.endsWith('…'), long);
+  assert.equal(statusText(null), '');
 });
 
 const segDist = (p, a, b) => {
@@ -78,13 +89,20 @@ test('generateCity: deterministic, modest, low-rise, landmarks stand clear, corr
   }
 });
 
-test('formatStats', () => {
-  assert.deepEqual(formatStats(null), { projects: '—', agents: '—', agentsSub: 'offline', tokens: '—', rate: '' });
-  const f = formatStats({ source: 'herdr', working: 1, subagents: 6, projects: 1, tokensToday: 215615003, tokensPerMin: 218000 });
-  assert.deepEqual(f, { projects: '1', agents: '7', agentsSub: '6 subagents · working', tokens: '215,615,003', rate: '218k / min' });
-  assert.equal(formatStats({ working: 0, subagents: 0, projects: 0, tokensToday: 5, tokensPerMin: 0 }).agentsSub, 'idle');
-  assert.equal(formatStats({ source: 'demo', working: 1, subagents: 0, projects: 1, tokensToday: 5, tokensPerMin: 900 }).agentsSub, 'demo working');
-  assert.equal(formatStats({ working: 1, subagents: 1, projects: 1, tokensToday: 5, tokensPerMin: 900 }).rate, '900 / min');
+test('HUD: compact token formatting', () => {
+  const cases = [[0, '0'], [984, '984'], [999, '999'], [1000, '1.0K'], [12_400, '12.4K'], [128_449, '128.4K'],
+    [999.6, '1.0K'], [999_949, '999.9K'], [999_950, '1.0M'], [999_950_000, '1.0B'], [1_234_567, '1.2M'], [215_615_003, '215.6M'], [2.5e9, '2.5B'], [-5, '0'], [undefined, '0']];
+  for (const [n, s] of cases) assert.equal(formatCompact(n), s, `${n}`);
+});
+
+test('HUD: values come from collector stats with existing semantics; offline shows dashes', () => {
+  const v = hudValues({ source: 'herdr', working: 1, subagents: 6, projects: 1, tokensToday: 215_615_003, tokensPerMin: 218_000 });
+  assert.deepEqual(v, { projects: 1, agents: 7, tokens: 215_615_003 }, 'agents = working + subagents; tokens = today');
+  assert.deepEqual(formatHud(v), { projects: '1', agents: '7', tokens: '215.6M' });
+  assert.deepEqual(formatHud(hudValues({})), { projects: '0', agents: '0', tokens: '0' });
+  assert.equal(hudValues(null), null);
+  assert.deepEqual(formatHud(null), { projects: '—', agents: '—', tokens: '—' });
+  assert.deepEqual(formatHud({ projects: 2.6, agents: 3.4, tokens: 12_449.7 }), { projects: '3', agents: '3', tokens: '12.4K' }, 'eased values round cleanly');
 });
 
 test('demoStats cycles idle → busy and tokens only grow', () => {
@@ -150,7 +168,7 @@ function landmarkBoxes(layout, aspect) {
     return {
       key: a.key, W, H,
       body: { x0: Math.min(...pts.map((p) => p[0])), x1: Math.max(...pts.map((p) => p[0])), y0: Math.min(...pts.map((p) => p[1])), y1: Math.max(...pts.map((p) => p[1])) },
-      label: { x0: lx - lw / 2, x1: lx + lw / 2, y0: ly - labelPx.height, y1: ly },
+      label: { x0: lx - lw / 2, x1: lx + lw / 2, y0: ly - labelHeightPx(), y1: ly }, // name + status line
     };
   });
 }

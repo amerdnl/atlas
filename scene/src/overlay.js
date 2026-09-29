@@ -1,23 +1,48 @@
-import { formatStats, formatInt } from './format.js';
+import { formatHud, hudValues } from './format.js';
 
+const TAU = 0.18; // seconds; a change settles in well under a second, without bounce
+
+/**
+ * Bottom-left wallpaper HUD: PROJECTS / AGENTS / TOKENS from collector stats. Numbers ease toward
+ * new values (exponential, no overshoot) and the DOM is only written when a displayed string changes.
+ */
 export function createOverlay(el) {
   const fields = Object.fromEntries([...el.querySelectorAll('[data-k]')].map((n) => [n.dataset.k, n]));
-  let target = null, shown = 0;
+  const keys = Object.keys(fields);
+  let target = null, shown = null;
+  const written = {};
+
+  function render() {
+    const text = formatHud(shown);
+    for (const k of keys) {
+      if (written[k] !== text[k]) { fields[k].textContent = text[k]; written[k] = text[k]; }
+    }
+  }
+
   return {
     set(stats) {
-      target = stats;
-      const f = formatStats(stats);
-      for (const k of ['projects', 'agents', 'agentsSub', 'rate']) fields[k].textContent = f[k];
-      if (!stats) fields.tokens.textContent = f.tokens;
-      else if (shown === 0) shown = stats.tokensToday;
+      target = hudValues(stats);
+      if (!target) shown = null;
+      else if (!shown) shown = { ...target }; // first value (or back online): show it, don't count up from zero
+      render();
     },
-    // Tokens count up smoothly toward the latest total.
+    /** Advances easing; returns true while numbers are still moving. Idle ticks touch nothing. */
     tick(dt) {
-      if (!target) return;
-      const goal = target.tokensToday || 0;
-      shown = goal < shown ? goal : shown + (goal - shown) * Math.min(1, dt * 3);
-      if (goal - shown < 1) shown = goal;
-      fields.tokens.textContent = formatInt(shown);
+      if (!target || !shown) return false;
+      let settled = true;
+      for (let i = 0; i < keys.length; i++) if (shown[keys[i]] !== target[keys[i]]) settled = false;
+      if (settled) return false;
+      let moving = false;
+      const k = 1 - Math.exp(-dt / TAU);
+      for (const key of keys) {
+        const goal = target[key];
+        let v = shown[key] + (goal - shown[key]) * k;
+        if (Math.abs(goal - v) < (key === 'tokens' ? Math.max(1, goal * 0.0005) : 0.02)) v = goal;
+        else moving = true;
+        shown[key] = v;
+      }
+      render();
+      return moving;
     },
   };
 }

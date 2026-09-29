@@ -10,6 +10,9 @@ import { createGround } from './ground.js';
 import { createBuildings } from './buildings.js';
 import { createLandmarks } from './landmarks.js';
 import { createSky, HAZE } from './sky.js';
+import { createHandoffPaths } from './handoff-paths.js';
+import { createWorkflowVisuals, createSample } from './workflow-visuals.js';
+import { createDemoDriver } from './workflow-demo.js';
 import { createOverlay } from './overlay.js';
 import { connectStats } from './stats-client.js';
 import { demoStats } from './demo.js';
@@ -48,7 +51,8 @@ const sky = createSky();
 const ground = createGround(city, env);
 const buildings = createBuildings(city.buildings, { ...env, nearDark: [layout.fog.near * 0.55, layout.fog.near * 0.9] });
 const landmarks = createLandmarks(layout, { ...env, fov: layout.camera.fov, fullH: P.fullH, dpr: renderer.getPixelRatio() });
-scene.add(sky.mesh, ground.group, buildings.mesh, landmarks.group);
+const paths = createHandoffPaths({ anchor: landmarks.anchor, camera, fov: layout.camera.fov, fullH: P.fullH });
+scene.add(sky.mesh, ground.group, buildings.mesh, landmarks.group, paths.group);
 
 const composer = new EffectComposer(renderer);
 composer.addPass(new RenderPass(scene, camera));
@@ -56,16 +60,23 @@ const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.
 composer.addPass(bloom);
 composer.addPass(new OutputPass());
 
-// Stats HUD hidden for now — a minimal status UI may come back later. Forced off regardless of
-// the `overlay` URL param (which the app still passes to the showcase display) so it's a purely
-// scene-local, easily-reversible change; overlay.js/format.js are untouched underneath.
+// Bottom-left HUD (collector stats) on the display the app marks with overlay=1 (the left-most).
 const overlayEl = document.getElementById('overlay');
-overlayEl.hidden = true;
+overlayEl.hidden = !P.overlay;
 const overlay = createOverlay(overlayEl);
 
-// `a`/`pulse` drive only the sparse background silhouette's subtle window flicker — the same
-// stats transport the city already had. The four ATLAS landmarks are static this phase (no
-// per-area role attribution yet); see landmarks.js for their local-clock-only beacon animation.
+// Two separate inputs, never mixed:
+// - collector stats (overall Claude telemetry) → the HUD, and the background city's subtle windows;
+// - workflow events (ATLAS roles/tasks) → the four landmarks and the handoff paths.
+// There is no real workflow source yet, so outside demo mode the landmarks rest at their idle baseline.
+const visuals = createWorkflowVisuals();
+const visual = createSample();
+const workflowDemo = P.workflowDemo ? createDemoDriver(visuals) : null;
+// Animation time is the wall clock (shared by every display), optionally shifted for review.
+const clockOffset = workflowDemo && P.demoAt >= 0 ? P.demoAt * 1000 - (Date.now() % workflowDemo.periodMs) : 0;
+const frozenAt = P.freeze && workflowDemo && P.demoAt >= 0 ? Date.now() + clockOffset : null;
+const wallClock = () => frozenAt ?? Date.now() + clockOffset;
+
 const state = { a: 0, pulse: 0 };
 let target = { a: 0, pulse: 0 };
 function applyStats(s) {
@@ -76,12 +87,12 @@ function applyStats(s) {
 if (P.demo) { const t0 = performance.now(); setInterval(() => applyStats(demoStats((performance.now() - t0) / 1000)), 500); }
 else connectStats(applyStats);
 
-let paused = false, last = performance.now(), lastDraw = 0;
+let paused = false, last = performance.now(), lastDraw = 0, moving = true;
 function frame(now) {
   if (paused) return;
   requestAnimationFrame(frame);
-  const settled = target.a === 0 && state.a < 0.005;
-  const fps = settled ? Math.min(P.fps, 10) : P.fps;
+  // Full frame rate only while something visibly moves; a resting city redraws at 10 fps.
+  const fps = moving ? P.fps : Math.min(P.fps, 10);
   if (now - lastDraw < 1000 / fps - 2) return;
   lastDraw = now;
   const dt = Math.min(0.1, (now - last) / 1000);
@@ -91,10 +102,16 @@ function frame(now) {
   for (const u of [ground.uniforms, buildings.uniforms]) {
     u.uActivity.value = state.a; u.uPulse.value = state.pulse; u.uTime.value = now / 1000;
   }
-  landmarks.update(now / 1000);
+  const wall = wallClock();
+  workflowDemo?.update(wall);
+  visuals.sample(wall, visual);
+  const clock = (wall % 3_600_000) / 1000;
+  landmarks.update(visual, clock);
+  paths.update(visual);
   bloom.strength = 0.3 + 0.1 * state.a;
   composer.render(dt);
-  overlay.tick(dt);
+  const hudMoving = overlay.tick(dt);
+  moving = visual.busy || hudMoving || Math.abs(state.a - target.a) > 0.005;
 }
 requestAnimationFrame(frame);
 

@@ -69,14 +69,27 @@ export const LANDMARK = {
   tower: { w: 64, d: 56, h: 118 },
   mastH: 14,
   clearRadius: 90, // city lots keep at least this far (plus their own half-size) from an area center
-  labelGapY: 10, // world units between the mast light and the label's bottom edge
+  labelGapY: 10, // world units between the mast light and the label block's bottom edge
   labelPx: { fontPx: 11, letterSpacingEm: 0.22, height: 20, dot: 7, padX: 6 },
+  // Optional status line under the name (the agent's current action), truncated to maxChars.
+  statusPx: { fontPx: 9.5, height: 14, maxChars: 26, padX: 6 },
 };
 
-/** Conservative label width in CSS px (tests have no canvas to measure with). */
+/** Conservative width in CSS px of a landmark's label block — name, plus the widest possible status line. */
 export function labelWidthPx(text) {
   const { fontPx, letterSpacingEm, dot, padX } = LANDMARK.labelPx;
-  return padX * 2 + dot + 6 + text.length * fontPx * (0.72 + letterSpacingEm);
+  const S = LANDMARK.statusPx;
+  return Math.max(padX * 2 + dot + 6 + text.length * fontPx * (0.72 + letterSpacingEm), S.padX * 2 + S.maxChars * S.fontPx * 0.62);
+}
+
+/** Height in CSS px of a landmark's label block (name above the status line). */
+export const labelHeightPx = () => LANDMARK.labelPx.height + LANDMARK.statusPx.height;
+
+/** A status line as displayed: single line, truncated with an ellipsis. */
+export function statusText(text) {
+  const t = String(text ?? '').replace(/\s+/g, ' ').trim();
+  const max = LANDMARK.statusPx.maxChars;
+  return t.length > max ? `${t.slice(0, max - 1).trimEnd()}…` : t;
 }
 
 /** An explicit `name` wins; otherwise pick by canvas aspect (one 16:9 display ≈ 1.78). */
