@@ -19,7 +19,8 @@ const herdrBin = config.herdrPath ?? 'herdr';
 const counter = new TokenCounter({ root: claudeRoot, includeCacheRead: config.includeCacheRead ?? true });
 
 let stats = { source: 'starting', working: 0, subagents: 0, projects: 0, keys: [], tokensToday: 0, tokensPerMin: 0, updatedAt: Date.now() };
-const { server, broadcast, ping } = createServer({ getStats: () => stats, sceneDir });
+const workflowDir = path.join(import.meta.dirname, '..', 'workflow');
+const { server, broadcast, ping } = createServer({ getStats: () => stats, sceneDir, workflowDir });
 const log = (...a) => console.log('[atlas]', ...a);
 
 let lastSource = null;

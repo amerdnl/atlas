@@ -1,6 +1,6 @@
 .PHONY: test dev
 test:
-	node --test 'collector/test/*.test.js' 'scene/test/*.test.js'
+	node --test 'collector/test/*.test.js' 'scene/test/*.test.js' 'workflow/test/*.test.js'
 dev: vendor
 	node collector/index.js --scene scene
 
@@ -20,8 +20,8 @@ app: vendor
 	rm -rf $(APP) && mkdir -p $(APP)/Contents/MacOS $(APP)/Contents/Resources
 	cp app/.build/release/Atlas $(APP)/Contents/MacOS/
 	cp app/Info.plist $(APP)/Contents/
-	cp -R scene collector $(APP)/Contents/Resources/
-	rm -rf $(APP)/Contents/Resources/scene/test $(APP)/Contents/Resources/collector/test
+	cp -R scene collector workflow $(APP)/Contents/Resources/
+	rm -rf $(APP)/Contents/Resources/scene/test $(APP)/Contents/Resources/collector/test $(APP)/Contents/Resources/workflow/test
 	codesign --force --deep --sign - $(APP)
 install: app
 	-osascript -e 'quit app "Atlas"' 2>/dev/null

@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test 'collector/test/*.test.js' 'scene/test/*.test.js'",
-    "dev": "node collector/index.js --scene scene"
+    "test": "node --test 'collector/test/*.test.js' 'scene/test/*.test.js' 'workflow/test/*.test.js'",
+    "dev": "node collector/index.js --scene scene",
+    "demo:workflow": "node workflow/bin/demo.js"
   }
 }

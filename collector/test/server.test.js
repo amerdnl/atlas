@@ -9,9 +9,11 @@ import { createServer } from '../src/server.js';
 
 const scene = fs.mkdtempSync(path.join(os.tmpdir(), 'ac-scene-'));
 fs.writeFileSync(path.join(scene, 'index.html'), '<h1>hi</h1>');
+const workflow = fs.mkdtempSync(path.join(os.tmpdir(), 'ac-workflow-'));
+fs.writeFileSync(path.join(workflow, 'roles.js'), 'export const ROLES = {};');
 
 async function withServer(fn) {
-  const { server, broadcast } = createServer({ getStats: () => ({ working: 1 }), sceneDir: scene });
+  const { server, broadcast } = createServer({ getStats: () => ({ working: 1 }), sceneDir: scene, workflowDir: workflow });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   try { await fn(`http://127.0.0.1:${server.address().port}`, broadcast); } finally { server.closeAllConnections(); server.close(); }
 }
@@ -30,6 +32,19 @@ test('GET / serves index.html', () => withServer(async (base) => {
 test('path traversal is refused', () => withServer(async (base) => {
   const r = await fetch(`${base}/..%2fetc%2fpasswd`);
   assert.equal(r.status, 403);
+}));
+
+test('GET /workflow/* serves the workflow modules as JavaScript', () => withServer(async (base) => {
+  const r = await fetch(`${base}/workflow/roles.js`);
+  assert.equal(r.status, 200);
+  assert.equal(r.headers.get('content-type'), 'text/javascript; charset=utf-8');
+  assert.equal(await r.text(), 'export const ROLES = {};');
+  assert.equal((await fetch(`${base}/workflow/missing.js`)).status, 404);
+}));
+
+test('path traversal out of /workflow/ is refused', () => withServer(async (base) => {
+  assert.equal((await fetch(`${base}/workflow/..%2f..%2fetc%2fpasswd`)).status, 403);
+  assert.equal((await fetch(`${base}/workflow/..%2findex.html`)).status, 403, 'cannot reach the scene dir through /workflow/ either');
 }));
 
 test('/events sends current stats then broadcasts', () => withServer((base, broadcast) => new Promise((resolve, reject) => {

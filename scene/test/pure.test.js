@@ -98,7 +98,8 @@ test('the four ATLAS areas have the specified identity', () => {
     Object.fromEntries(Object.entries(ATLAS_AREAS).map(([k, v]) => [k, v.label])),
     { operations: 'OPERATIONS', research: 'RESEARCH', developer: 'DEVELOPER', qa: 'QA' },
   );
-  for (const { color } of Object.values(ATLAS_AREAS)) assert.ok(Number.isInteger(color) && color >= 0 && color <= 0xffffff);
+  // Derived from the canonical role registry, unchanged from Phase 2's colors.
+  assert.deepEqual(Object.values(ATLAS_AREAS).map((a) => a.color), [0xff9a3c, 0x4a9dff, 0x3ddc84, 0xb96bff]);
 });
 
 test('pickLayout by canvas aspect, URL override wins', () => {

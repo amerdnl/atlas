@@ -7,9 +7,13 @@ const TYPES = {
   '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.png': 'image/png',
 };
 
-/** GET /stats (JSON), GET /events (SSE), everything else is a static file from `sceneDir`. */
-export function createServer({ getStats, sceneDir }) {
-  const root = sceneDir ? path.resolve(sceneDir) : null;
+/**
+ * GET /stats (JSON), GET /events (SSE), /workflow/* static files from `workflowDir` (the pure
+ * workflow modules the scene imports), everything else a static file from `sceneDir`.
+ */
+export function createServer({ getStats, sceneDir, workflowDir }) {
+  const sceneRoot = sceneDir ? path.resolve(sceneDir) : null;
+  const workflowRoot = workflowDir ? path.resolve(workflowDir) : null;
   const clients = new Set();
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://localhost');
@@ -24,9 +28,12 @@ export function createServer({ getStats, sceneDir }) {
       req.on('close', () => clients.delete(res));
       return;
     }
+    const underWorkflow = url.pathname.startsWith('/workflow/');
+    const root = underWorkflow ? workflowRoot : sceneRoot;
     if (!root) { res.writeHead(404); return res.end(); }
+    const pathname = underWorkflow ? url.pathname.slice('/workflow'.length) : url.pathname;
     let rel;
-    try { rel = decodeURIComponent(url.pathname === '/' ? '/index.html' : url.pathname); } catch { res.writeHead(400); return res.end(); }
+    try { rel = decodeURIComponent(pathname === '/' ? '/index.html' : pathname); } catch { res.writeHead(400); return res.end(); }
     const file = path.join(root, rel);
     if (!file.startsWith(root + path.sep)) { res.writeHead(403); return res.end(); }
     fs.readFile(file, (err, buf) => {

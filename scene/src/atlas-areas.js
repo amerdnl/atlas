@@ -1,11 +1,10 @@
-/**
- * The four ATLAS engineering areas: stable identity (label, color), shared by every layout.
- * Layouts (`layouts.js`) supply only where each one sits in world space; a future straight-line
- * agent-path module can read this plus a layout's positions without any new data model.
- */
-export const ATLAS_AREAS = {
-  operations: { label: 'OPERATIONS', color: 0xff9a3c },
-  research: { label: 'RESEARCH', color: 0x4a9dff },
-  developer: { label: 'DEVELOPER', color: 0x3ddc84 },
-  qa: { label: 'QA', color: 0xb96bff },
-};
+// Role identity lives in workflow/roles.js; this is the scene's view of it (map-style label, numeric color).
+// On disk this path is <repo>/workflow/roles.js. In the browser, `/src/` + `../../` resolves to `/`,
+// i.e. `/workflow/roles.js`, which the collector serves from the same directory.
+import { ROLE_IDS, ROLES } from '../../workflow/roles.js';
+
+/** The four ATLAS areas the city draws, keyed by role id. Layouts (`layouts.js`) place them. */
+export const ATLAS_AREAS = Object.freeze(Object.fromEntries(ROLE_IDS.map((id) => [id, Object.freeze({
+  label: ROLES[id].name.toUpperCase(),
+  color: parseInt(ROLES[id].color.slice(1), 16),
+})])));
