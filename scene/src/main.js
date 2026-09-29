@@ -102,7 +102,7 @@ addEventListener('resize', () => {
   applyView();
 });
 
-window.agentCity = {
+window.atlas = {
   setPaused(p) {
     if (p === paused) return;
     paused = p;

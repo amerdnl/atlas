@@ -10,7 +10,7 @@ final class Collector {
 
     init(collectorDir: URL, sceneDir: URL, port: Int) {
         self.collectorDir = collectorDir; self.sceneDir = sceneDir; self.port = port
-        let logs = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/AgentCity")
+        let logs = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/Atlas")
         try? FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
         logURL = logs.appendingPathComponent("collector.log")
     }
@@ -46,7 +46,7 @@ final class Collector {
         p.arguments = ["node", collectorDir.appendingPathComponent("index.js").path, "--scene", sceneDir.path, "--port", String(port)]
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = path
-        env["AGENT_CITY_PARENT"] = "1"
+        env["ATLAS_PARENT"] = "1"
         p.environment = env
         if !FileManager.default.fileExists(atPath: logURL.path) { FileManager.default.createFile(atPath: logURL.path, contents: nil) }
         if let log = try? FileHandle(forWritingTo: logURL) { log.seekToEndOfFile(); p.standardOutput = log; p.standardError = log }
@@ -59,7 +59,7 @@ final class Collector {
                 DispatchQueue.main.asyncAfter(deadline: .now() + delay) { self.launch(path: path) }
             }
         }
-        do { try p.run(); process = p } catch { NSLog("agent-city: failed to start collector: \(error)") }
+        do { try p.run(); process = p } catch { NSLog("atlas: failed to start collector: \(error)") }
     }
 
     func stop() {

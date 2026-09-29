@@ -9,7 +9,7 @@ import { createServer } from './src/server.js';
 
 const arg = (name) => { const i = process.argv.indexOf(`--${name}`); return i > 1 ? process.argv[i + 1] : undefined; };
 const config = (() => {
-  try { return JSON.parse(fs.readFileSync(path.join(os.homedir(), '.config/agent-city/config.json'), 'utf8')); } catch { return {}; }
+  try { return JSON.parse(fs.readFileSync(path.join(os.homedir(), '.config/atlas/config.json'), 'utf8')); } catch { return {}; }
 })();
 
 const port = Number(arg('port') ?? config.port ?? 47823);
@@ -20,7 +20,7 @@ const counter = new TokenCounter({ root: claudeRoot, includeCacheRead: config.in
 
 let stats = { source: 'starting', working: 0, subagents: 0, projects: 0, keys: [], tokensToday: 0, tokensPerMin: 0, updatedAt: Date.now() };
 const { server, broadcast, ping } = createServer({ getStats: () => stats, sceneDir });
-const log = (...a) => console.log('[agent-city]', ...a);
+const log = (...a) => console.log('[atlas]', ...a);
 
 let lastSource = null;
 async function tick() {
@@ -31,13 +31,13 @@ async function tick() {
     stats = next;
     if (changed) broadcast(stats);
   } catch (e) {
-    console.error('[agent-city] tick failed:', e.message);
+    console.error('[atlas] tick failed:', e.message);
   }
   setTimeout(tick, 2000);
 }
 
 server.on('error', (e) => {
-  console.error(`[agent-city] ${e.message}`);
+  console.error(`[atlas] ${e.message}`);
   process.exit(e.code === 'EADDRINUSE' ? 3 : 1);
 });
 server.listen(port, '127.0.0.1', () => {
@@ -47,4 +47,4 @@ server.listen(port, '127.0.0.1', () => {
 });
 
 // When launched by the app, exit if the app goes away (we get re-parented to launchd).
-if (process.env.AGENT_CITY_PARENT) setInterval(() => { if (process.ppid === 1) process.exit(0); }, 5000);
+if (process.env.ATLAS_PARENT) setInterval(() => { if (process.ppid === 1) process.exit(0); }, 5000);

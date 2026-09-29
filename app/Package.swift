@@ -2,7 +2,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "AgentCity",
+    name: "Atlas",
     platforms: [.macOS(.v13)],
-    targets: [.executableTarget(name: "AgentCity", path: "Sources/AgentCity")]
+    targets: [.executableTarget(name: "Atlas", path: "Sources/Atlas")]
 )

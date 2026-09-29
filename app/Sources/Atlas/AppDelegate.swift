@@ -10,7 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var rebuildWork: DispatchWorkItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let root = ProcessInfo.processInfo.environment["AGENT_CITY_ROOT"].map { URL(fileURLWithPath: $0) }
+        let root = ProcessInfo.processInfo.environment["ATLAS_ROOT"].map { URL(fileURLWithPath: $0) }
             ?? Bundle.main.resourceURL!
         collector = Collector(collectorDir: root.appendingPathComponent("collector"),
                               sceneDir: root.appendingPathComponent("scene"), port: port)
@@ -76,7 +76,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func buildMenu() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        statusItem.button?.image = NSImage(systemSymbolName: "building.2", accessibilityDescription: "Agent City")
+        statusItem.button?.image = NSImage(systemSymbolName: "building.2", accessibilityDescription: "ATLAS")
         statusItem.menu = makeMenu()
     }
 
@@ -93,7 +93,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item("Reload scene", #selector(reload))
         item("Launch at login", #selector(toggleLogin), SMAppService.mainApp.status == .enabled)
         menu.addItem(.separator())
-        item("Quit Agent City", #selector(quit))
+        item("Quit ATLAS", #selector(quit))
         return menu
     }
 
@@ -105,7 +105,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func toggleLogin() {
         do {
             if SMAppService.mainApp.status == .enabled { try SMAppService.mainApp.unregister() } else { try SMAppService.mainApp.register() }
-        } catch { NSLog("agent-city: login item: \(error)") }
+        } catch { NSLog("atlas: login item: \(error)") }
         refreshMenu()
     }
     @objc private func quit() { NSApp.terminate(nil) }

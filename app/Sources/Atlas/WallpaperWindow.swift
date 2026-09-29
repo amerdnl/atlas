@@ -41,6 +41,6 @@ final class WallpaperWindow: NSWindow, WKNavigationDelegate {
     }
 
     func setPaused(_ paused: Bool) {
-        webView.evaluateJavaScript("window.agentCity && window.agentCity.setPaused(\(paused))")
+        webView.evaluateJavaScript("window.atlas && window.atlas.setPaused(\(paused))")
     }
 }

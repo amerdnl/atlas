@@ -1,11 +1,11 @@
-# agent-city
+# ATLAS
 
 A macOS live wallpaper: a night city that sits dark and quiet while your AI coding
 agents are idle, and comes alive while they work — windows light up and Tron-style
 light streams flow through the streets. A small overlay shows projects, agents
 (with subagents), tokens used today and tokens per minute.
 
-![agent-city: the city lights up while agents work, then goes quiet again](docs/media/agent-city.gif)
+![ATLAS: the city lights up while agents work, then goes quiet again](docs/media/agent-city.gif)
 
 Inspired by [@internetphysics](https://x.com/internetphysics/status/2104305710079119649).
 
@@ -28,7 +28,7 @@ Inspired by [@internetphysics](https://x.com/internetphysics/status/210430571007
 make install
 ```
 
-This builds `AgentCity.app`, copies it to `~/Applications` and launches it. Use the
+This builds `Atlas.app`, copies it to `~/Applications` and launches it. Use the
 building icon in the menu bar for **Pause**, **Demo mode**, **Reload scene**,
 **Launch at login** and **Quit**.
 
@@ -46,7 +46,7 @@ building icon in the menu bar for **Pause**, **Demo mode**, **Reload scene**,
 
 ## Configuration
 
-Optional `~/.config/agent-city/config.json`:
+Optional `~/.config/atlas/config.json`:
 
 ```json
 {
@@ -77,7 +77,7 @@ Useful scene URLs:
 Run the app against your checkout without installing:
 
 ```bash
-cd app && swift build && AGENT_CITY_ROOT=.. .build/debug/AgentCity
+cd app && swift build && ATLAS_ROOT=.. .build/debug/Atlas
 ```
 
 ## Layout
@@ -89,5 +89,5 @@ cd app && swift build && AGENT_CITY_ROOT=.. .build/debug/AgentCity
 
 ## Troubleshooting
 
-- Collector log: `~/Library/Logs/AgentCity/collector.log`
+- Collector log: `~/Library/Logs/Atlas/collector.log`
 - `curl -s 127.0.0.1:47823/stats` shows what the wallpaper sees.
