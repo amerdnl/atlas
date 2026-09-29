@@ -69,12 +69,13 @@ const overlay = createOverlay(overlayEl);
 // Two separate inputs, never mixed:
 // - collector stats (overall Claude telemetry) → the HUD, and the background city's subtle windows;
 // - workflow events (ATLAS roles/tasks) → the four landmarks and the handoff paths.
-// Outside demo mode the landmarks follow the one authoritative ATLAS runtime (in the collector);
-// with no task running they rest at their idle baseline.
+// Exactly one workflow source per page, chosen at load: the demo (in-memory, this page only) or
+// the one authoritative ATLAS runtime (in the collector). Switching modes reloads the page, so
+// demo state never reaches a live page and vice versa. With no task running every role is off.
 const visuals = createWorkflowVisuals();
 const visual = createSample();
 const workflowDemo = P.workflowDemo ? createDemoDriver(visuals) : null;
-if (!workflowDemo) connectWorkflow(visuals);
+if (!workflowDemo) connectWorkflow(visuals, { onChange: () => { lastDraw = 0; } }); // draw a new event on the next frame
 // Animation time is the wall clock (shared by every display), optionally shifted for review.
 const clockOffset = workflowDemo && P.demoAt >= 0 ? P.demoAt * 1000 - (Date.now() % workflowDemo.periodMs) : 0;
 const frozenAt = P.freeze && workflowDemo && P.demoAt >= 0 ? Date.now() + clockOffset : null;
@@ -90,12 +91,14 @@ function applyStats(s) {
 if (P.demo) { const t0 = performance.now(); setInterval(() => applyStats(demoStats((performance.now() - t0) / 1000)), 500); }
 else connectStats(applyStats);
 
-let paused = false, last = performance.now(), lastDraw = 0, moving = true;
+let paused = false, last = performance.now(), lastDraw = 0, moving = true, lit = false;
 function frame(now) {
   if (paused) return;
   requestAnimationFrame(frame);
-  // Full frame rate only while something visibly moves; a resting city redraws at 10 fps.
-  const fps = moving ? P.fps : Math.min(P.fps, 10);
+  // Full frame rate only while something visibly moves (a light turning on/off, a working role's
+  // flow, a label fading, a path); slow pulses and held labels redraw at 10 fps; a fully idle city
+  // at 4 fps. A new live event forces the next frame (lastDraw = 0), so nothing starts late.
+  const fps = moving ? P.fps : Math.min(P.fps, lit || workflowDemo ? 10 : 4); // the demo steps on frames
   if (now - lastDraw < 1000 / fps - 2) return;
   lastDraw = now;
   const dt = Math.min(0.1, (now - last) / 1000);
@@ -115,6 +118,7 @@ function frame(now) {
   composer.render(dt);
   const hudMoving = overlay.tick(dt);
   moving = visual.busy || hudMoving || Math.abs(state.a - target.a) > 0.005;
+  lit = visual.active;
 }
 requestAnimationFrame(frame);
 

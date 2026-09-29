@@ -27,10 +27,10 @@ test('every role maps to one landmark in every layout, using the canonical role 
   assert.deepEqual(Object.keys(createSample().roles), ROLE_IDS);
 });
 
-test('status targets: faint idle, rising through assigned to working; waiting softer; blocked warns', () => {
+test('status targets: idle fully off, rising through assigned to working; waiting softer; blocked warns', () => {
   const S = STATUS_VISUALS;
   assert.deepEqual(Object.keys(S), ['idle', 'assigned', 'working', 'waiting', 'blocked'], 'exactly the Phase 3 agent statuses');
-  assert.ok(S.idle.level > 0 && S.idle.level < 0.2, 'idle is a faint baseline, not black');
+  assert.deepEqual({ ...S.idle }, { level: 0, flow: 0, wait: 0, warn: 0 }, 'idle: role light fully off');
   assert.ok(S.idle.level < S.assigned.level && S.assigned.level < S.working.level);
   assert.ok(S.waiting.level > S.assigned.level && S.waiting.level < S.working.level);
   assert.ok(S.blocked.level > S.idle.level && S.blocked.level < S.working.level);
@@ -39,8 +39,8 @@ test('status targets: faint idle, rising through assigned to working; waiting so
     assert.equal(v.wait, status === 'waiting' ? 1 : 0, `${status} wait pulse`);
     assert.equal(v.warn, status === 'blocked' ? 1 : 0, `${status} warning`);
   }
-  assert.ok(TIMING.riseMs >= 600 && TIMING.riseMs <= 900, 'turn-on 600–900 ms');
-  assert.ok(TIMING.fallMs >= 800 && TIMING.fallMs <= 1200, 'turn-off 800–1200 ms');
+  assert.ok(TIMING.riseMs >= 500 && TIMING.riseMs <= 800, 'turn-on 500–800 ms');
+  assert.ok(TIMING.fallMs >= 700 && TIMING.fallMs <= 1100, 'turn-off 700–1100 ms');
 });
 
 test('idle → assigned → working eases smoothly, with no jumps', () => {
@@ -56,7 +56,7 @@ test('idle → assigned → working eases smoothly, with no jumps', () => {
   assert.ok(mid > STATUS_VISUALS.assigned.level && mid < STATUS_VISUALS.working.level, `mid-transition ${mid}`);
   const done = r.role('operations', t1 + SETTLE);
   assert.ok(close(done.level, STATUS_VISUALS.working.level) && done.flow === 1);
-  assert.equal(done.text, 'scoping');
+  assert.equal(done.text, 'planning', 'a short stage word, not the tool action');
   let prev = r.role('operations', t1 - 16).level;
   for (let t = t1; t <= t1 + SETTLE; t += 16) {
     const v = r.role('operations', t).level;
@@ -65,7 +65,7 @@ test('idle → assigned → working eases smoothly, with no jumps', () => {
   }
 });
 
-test('working → idle eases down to the faint baseline, not black', () => {
+test('working → idle eases down to fully off', () => {
   const r = rig();
   const { id } = r.wf.createTask({ title: 'x' });
   r.wf.startWork(id);
@@ -75,7 +75,7 @@ test('working → idle eases down to the faint baseline, not black', () => {
   const mid = r.role('operations', t1 + TIMING.fallMs / 2);
   assert.ok(mid.level < STATUS_VISUALS.working.level && mid.level > STATUS_VISUALS.idle.level);
   const end = r.role('operations', t1 + SETTLE);
-  assert.ok(close(end.level, STATUS_VISUALS.idle.level) && end.flow === 0 && end.show === 0);
+  assert.ok(end.level === 0 && end.flow === 0 && end.label === 0);
   assert.equal(r.v.sample(t1 + SETTLE).busy, false);
 });
 
@@ -86,11 +86,11 @@ test('waiting and blocked map to their own restrained targets', () => {
   r.set(T0 + 3000);
   r.wf.wait(id, { reason: 'awaiting answer' });
   const waiting = r.role('operations', T0 + 3000 + SETTLE);
-  assert.deepEqual([waiting.status, waiting.wait, waiting.flow, waiting.text], ['waiting', 1, 0, 'awaiting answer']);
+  assert.deepEqual([waiting.status, waiting.wait, waiting.flow, waiting.text], ['waiting', 1, 0, 'waiting']);
   r.set(T0 + 6000);
   r.wf.block(id, { reason: 'repo unavailable' });
   const blocked = r.role('operations', T0 + 6000 + SETTLE);
-  assert.deepEqual([blocked.status, blocked.warn, blocked.text], ['blocked', 1, 'repo unavailable']);
+  assert.deepEqual([blocked.status, blocked.warn, blocked.text], ['blocked', 1, 'blocked']);
   assert.ok(close(blocked.level, STATUS_VISUALS.blocked.level), 'role light kept at a moderate level, not a red building');
 });
 
@@ -149,7 +149,7 @@ test('QA fail → purple QA→Developer; rework → green Developer→QA; QA pas
   assert.deepEqual([p.from, p.to, p.color], ['qa', 'operations', ATLAS_AREAS.qa.color]);
   step(() => r.wf.startWork(id, { action: 'finalizing delivery' }));
   const ops = r.role('operations', t + SETTLE);
-  assert.deepEqual([ops.status, ops.flow, ops.text], ['working', 1, 'finalizing delivery'], 'Operations visibly finalizing');
+  assert.deepEqual([ops.status, ops.flow, ops.text], ['working', 1, 'finalizing'], 'Operations visibly finalizing');
 
   step(() => r.wf.completeStage(id));
   const end = r.v.sample(t + SETTLE);
@@ -225,7 +225,7 @@ test('demo: the Phase 3 engine drives the full visible sequence', () => {
   for (const role of ROLE_IDS) assert.ok(statuses.some((c) => c.role === role && c.status === 'working'), `${role} works`);
   assert.ok(statuses.some((c) => c.role === 'research' && c.status === 'waiting'));
   assert.ok(statuses.some((c) => c.role === 'developer' && c.status === 'blocked'));
-  assert.ok(statuses.some((c) => c.role === 'operations' && c.text === 'finalizing delivery'), 'finalizing is visible');
+  assert.ok(statuses.some((c) => c.role === 'operations' && c.text === 'finalizing'), 'finalizing is visible');
   const end = v.sample(start + d.periodMs - 1);
   assert.equal(end.pathCount, 0);
   assert.equal(end.busy, false, 'the city settles to idle before the story repeats');

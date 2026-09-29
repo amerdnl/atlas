@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { activityLevel, pulseLevel, districtOf, districtBoosts, easeToward } from '../src/activity.js';
 import { readParams } from '../src/params.js';
 import { generateCity } from '../src/city.js';
-import { formatCompact, formatHud, hudValues } from '../src/format.js';
+import { formatInt, formatHud, hudValues } from '../src/format.js';
 import { demoStats } from '../src/demo.js';
 import { LAYOUTS, LANDMARK, labelWidthPx, labelHeightPx, statusText, pickLayout } from '../src/layouts.js';
 import { ATLAS_AREAS } from '../src/atlas-areas.js';
@@ -89,20 +89,22 @@ test('generateCity: deterministic, modest, low-rise, landmarks stand clear, corr
   }
 });
 
-test('HUD: compact token formatting', () => {
-  const cases = [[0, '0'], [984, '984'], [999, '999'], [1000, '1.0K'], [12_400, '12.4K'], [128_449, '128.4K'],
-    [999.6, '1.0K'], [999_949, '999.9K'], [999_950, '1.0M'], [999_950_000, '1.0B'], [1_234_567, '1.2M'], [215_615_003, '215.6M'], [2.5e9, '2.5B'], [-5, '0'], [undefined, '0']];
-  for (const [n, s] of cases) assert.equal(formatCompact(n), s, `${n}`);
+test('HUD: tokens are the full integer with thousands separators — never abbreviated, no decimals', () => {
+  const cases = [[0, '0'], [984, '984'], [999, '999'], [1000, '1,000'], [12_430, '12,430'], [128_449, '128,449'],
+    [999_950, '999,950'], [1_204_331, '1,204,331'], [174_900_000, '174,900,000'], [2_500_000_000, '2,500,000,000'],
+    [12_449.7, '12,450'], [-5, '0'], [undefined, '0'], [NaN, '0']];
+  for (const [n, s] of cases) assert.equal(formatInt(n), s, `${n}`);
+  for (const [n] of cases) assert.doesNotMatch(formatInt(n), /[KMB.]/, `${n} is not abbreviated`);
 });
 
 test('HUD: values come from collector stats with existing semantics; offline shows dashes', () => {
   const v = hudValues({ source: 'herdr', working: 1, subagents: 6, projects: 1, tokensToday: 215_615_003, tokensPerMin: 218_000 });
   assert.deepEqual(v, { projects: 1, agents: 7, tokens: 215_615_003 }, 'agents = working + subagents; tokens = today');
-  assert.deepEqual(formatHud(v), { projects: '1', agents: '7', tokens: '215.6M' });
+  assert.deepEqual(formatHud(v), { projects: '1', agents: '7', tokens: '215,615,003' });
   assert.deepEqual(formatHud(hudValues({})), { projects: '0', agents: '0', tokens: '0' });
   assert.equal(hudValues(null), null);
   assert.deepEqual(formatHud(null), { projects: '—', agents: '—', tokens: '—' });
-  assert.deepEqual(formatHud({ projects: 2.6, agents: 3.4, tokens: 12_449.7 }), { projects: '3', agents: '3', tokens: '12.4K' }, 'eased values round cleanly');
+  assert.deepEqual(formatHud({ projects: 2.6, agents: 3.4, tokens: 12_449.7 }), { projects: '3', agents: '3', tokens: '12,450' }, 'eased values round cleanly');
 });
 
 test('demoStats cycles idle → busy and tokens only grow', () => {

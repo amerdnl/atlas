@@ -7,8 +7,8 @@ import * as THREE from 'three';
  *
  * An instance may carry `accent` (a color) and `roleIndex` (0–3): it is then an ATLAS landmark,
  * lit by its role's live channels in `uRole[roleIndex]` = (level, working flow, waiting pulse, —).
- * Its upper-floor windows power on one by one as the level rises, a slow upward wave moves through
- * them while working, and a faint reflected color rises on the upper facade. `uClock` is
+ * At level 0 it is an ordinary building. Its upper-floor windows power on one by one as the level
+ * rises, a gentle upward wave (3 s) moves through them while working, and a faint reflected color rises on the upper facade. `uClock` is
  * wall-clock seconds within the hour (every period divides 3600), so all displays stay in phase.
  */
 export function createBuildings(list, { haze, fog, nearDark = [0, 0] }) {
@@ -72,13 +72,13 @@ export function createBuildings(list, { haze, fog, nearDark = [0, 0] }) {
           if (vAccent.a > 0.0) {
             float level = vRole.x, flow = vRole.y, waiting = vRole.z;
             float yf = vLocal.y / vSize.y;
-            col += vAccent.rgb * (0.004 + 0.02 * level) * smoothstep(0.25, 1.0, yf); // faint reflected color, upper facade
+            col += vAccent.rgb * (0.024 * level) * smoothstep(0.25, 1.0, yf); // faint reflected color, upper facade (none when off)
             float band = step(0.5, yf) * step(yf, 0.88);
             float r2 = hash(cell * 1.7 + vSeed * 5.0);
-            float on = smoothstep(r2, r2 + 0.08, 0.08 + 0.38 * level); // each window fades on at its own threshold
-            float wave = 0.5 + 0.5 * sin(6.2831853 * (uClock / 6.0 - yf * 0.9 - r2 * 0.35));
+            float on = smoothstep(r2, r2 + 0.08, 0.46 * level - 0.02); // each window fades on at its own threshold; none at idle
+            float wave = 0.5 + 0.5 * sin(6.2831853 * (uClock / 3.0 - yf * 0.9 - r2 * 0.35));
             float breathe = 0.5 + 0.5 * sin(6.2831853 * uClock / 9.0);
-            float motion = 1.0 + flow * (wave - 0.5) * 0.55 + waiting * (breathe - 0.5) * 0.3;
+            float motion = 1.0 + flow * (wave - 0.5) * 0.4 + waiting * (breathe - 0.5) * 0.3;
             float accLit = on * band * win;
             col = mix(col, vAccent.rgb * (0.2 + 0.5 * level) * motion, accLit);
             lit *= 1.0 - accLit;

@@ -2,11 +2,15 @@ import * as THREE from 'three';
 import { ATLAS_AREAS } from './atlas-areas.js';
 import { LANDMARK, statusText } from './layouts.js';
 import { createBuildings } from './buildings.js';
+import { BREATHE_S } from './workflow-visuals.js';
 
 const { podium: POD, tower: TWR, mastH, labelGapY, labelPx: LP, statusPx: SP } = LANDMARK;
 const hex = (c) => `#${c.toString(16).padStart(6, '0')}`;
 const TAU = Math.PI * 2;
 const WARN = new THREE.Color(0xff5a44);
+// Idle (role off): trim and mast read as ordinary dark architecture.
+const TRIM_OFF = new THREE.Color(0x1a1f2a);
+const MAST_OFF = new THREE.Color(0x2a2f39);
 const MAST_LOCAL = new THREE.Vector3(TWR.w * 0.22, TWR.h + mastH + 1.5, -TWR.d * 0.18);
 
 function canvasTexture(canvas) {
@@ -116,7 +120,7 @@ export function createLandmarks(layout, { haze, fog, fov, fullH, dpr }) {
     g.position.set(x, 0, z);
     g.rotation.y = rot;
     const roleColor = new THREE.Color(color);
-    const edgeMat = new THREE.MeshBasicMaterial({ color: roleColor.clone() });
+    const edgeMat = new THREE.MeshBasicMaterial({ color: TRIM_OFF.clone() });
     const cornice = new THREE.Mesh(corniceGeo, edgeMat);
     cornice.position.y = TWR.h - 1.1;
     // One thin vertical edge on the tower corner nearest the camera (+z), upper part only.
@@ -127,7 +131,7 @@ export function createLandmarks(layout, { haze, fog, fov, fullH, dpr }) {
     edge.position.set(cu, TWR.h * 0.78, cv);
     const mast = new THREE.Mesh(mastGeo, new THREE.MeshBasicMaterial({ color: 0x0b0e15 }));
     mast.position.set(MAST_LOCAL.x, TWR.h + mastH / 2, MAST_LOCAL.z);
-    const lightMat = new THREE.MeshBasicMaterial({ color: roleColor.clone(), toneMapped: false });
+    const lightMat = new THREE.MeshBasicMaterial({ color: MAST_OFF.clone(), toneMapped: false });
     const light = new THREE.Mesh(lightGeo, lightMat);
     light.position.copy(MAST_LOCAL);
     g.add(cornice, edge, mast, light);
@@ -137,6 +141,8 @@ export function createLandmarks(layout, { haze, fog, fov, fullH, dpr }) {
     // Label block above the mast: the status line sits at the anchor, the name just above it.
     const labelY = TWR.h + mastH + labelGapY;
     const name = screenSprite(labelTexture(label, color, dpr), LP.height, pxToWorld, dpr);
+    name.material.opacity = 0; // labels are transient: hidden until the role becomes active
+    name.visible = false;
     name.center.set(0.5, -SP.height / LP.height);
     name.position.set(x, labelY, z);
     const status = [0, 1].map(() => {
@@ -148,7 +154,7 @@ export function createLandmarks(layout, { haze, fog, fov, fullH, dpr }) {
     });
     group.add(name, ...status.map((st) => st.sprite));
 
-    return { key, roleColor, edgeMat, lightMat, status, phase: i * 2.3 };
+    return { key, roleColor, edgeMat, lightMat, name, status };
   });
 
   const bodyMesh = createBuildings(bodies, { haze, fog });
@@ -164,6 +170,7 @@ export function createLandmarks(layout, { haze, fog, fov, fullH, dpr }) {
       st.sprite.scale.x = (tex.image.width / dpr) * pxToWorld;
     }
     st.sprite.material.opacity = text ? opacity : 0;
+    st.sprite.visible = st.sprite.material.opacity > 0;
     st.sprite.material.color.setRGB(1, 1 - 0.25 * warn, 1 - 0.35 * warn); // blocked: a slightly warm tint
   }
 
@@ -180,18 +187,23 @@ export function createLandmarks(layout, { haze, fog, fov, fullH, dpr }) {
       for (let i = 0; i < parts.length; i++) {
         const p = parts[i], r = sample.roles[p.key];
         roleUniforms[i].set(r.level, r.flow, r.wait, r.warn);
-        p.edgeMat.color.copy(p.roleColor).multiplyScalar(0.22 + 0.5 * r.level);
+        // Role color only in proportion to the light level: at idle (level 0) the trim and mast are
+        // plain dark architecture, indistinguishable from the rest of the city.
+        const on = Math.min(1, r.level / 0.45);
+        p.edgeMat.color.copy(TRIM_OFF).lerp(p.roleColor, on).multiplyScalar(1 - on + on * (0.3 + 0.45 * r.level));
         const breath = 1
-          + 0.06 * Math.sin(TAU * clock / 12 + p.phase)
-          + 0.1 * r.flow * Math.sin(TAU * clock / 4)
-          + 0.18 * r.wait * Math.sin(TAU * clock / 9)
-          + 0.3 * r.warn * Math.sin(TAU * clock / 3);
-        p.lightMat.color.copy(p.roleColor).lerp(WARN, r.warn).multiplyScalar((0.55 + 0.95 * r.level) * breath);
-        // Sequential, never overlapping: the old line fades out in the first half, the new one in during the second.
+          + 0.14 * r.flow * Math.sin(TAU * clock / BREATHE_S.working)
+          + 0.16 * r.wait * Math.sin(TAU * clock / BREATHE_S.waiting)
+          + 0.2 * r.warn * Math.sin(TAU * clock / BREATHE_S.blocked);
+        p.lightMat.color.copy(MAST_OFF).lerp(p.roleColor, on).lerp(WARN, r.warn).multiplyScalar(1 - on + on * (0.6 + 0.9 * r.level) * breath);
+        // Name and status line share the transient label visibility. Status lines crossfade
+        // sequentially, never overlapping: the old one out in the first half, the new one in the second.
+        p.name.material.opacity = r.label;
+        p.name.visible = r.label > 0;
         const incoming = Math.min(1, Math.max(0, r.textMix * 2 - 1));
         const outgoing = r.prevText ? Math.min(1, Math.max(0, 1 - r.textMix * 2)) : 0;
-        showStatus(p.status[0], r.text, r.show * (r.prevText ? incoming : r.textMix), r.warn);
-        showStatus(p.status[1], r.prevText, r.show * outgoing, r.warn);
+        showStatus(p.status[0], r.text, r.label * (r.prevText ? incoming : r.textMix), r.warn);
+        showStatus(p.status[1], r.prevText, r.label * outgoing, r.warn);
       }
     },
   };
