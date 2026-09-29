@@ -4,11 +4,12 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { readParams } from './params.js';
-import { generateCity, mulberry32 } from './city.js';
-import { activityLevel, pulseLevel, districtBoosts, easeToward } from './activity.js';
+import { generateCity } from './city.js';
+import { activityLevel, pulseLevel, easeToward } from './activity.js';
 import { createGround } from './ground.js';
 import { createBuildings } from './buildings.js';
-import { createStreams } from './streams.js';
+import { createLandmarks } from './landmarks.js';
+import { createSky, HAZE } from './sky.js';
 import { createOverlay } from './overlay.js';
 import { connectStats } from './stats-client.js';
 import { demoStats } from './demo.js';
@@ -23,13 +24,13 @@ renderer.toneMapping = THREE.ACESFilmicToneMapping;
 document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x06080d);
+scene.background = new THREE.Color(HAZE);
 
 // The canvas shape (1, 2 or 3 displays wide) picks the composition.
 const layout = LAYOUTS[pickLayout(P.fullW / P.fullH, P.layout)];
 
 // One camera frames the whole multi-display canvas; each window renders its own slice of it.
-const camera = new THREE.PerspectiveCamera(layout.camera.fov, P.fullW / P.fullH, 10, 16000);
+const camera = new THREE.PerspectiveCamera(layout.camera.fov, P.fullW / P.fullH, 10, 24000);
 camera.position.set(...layout.camera.position);
 camera.lookAt(...layout.camera.lookAt);
 const applyView = () => {
@@ -40,32 +41,35 @@ const applyView = () => {
 };
 applyView();
 
+// Everything is placed in world space by layouts.js/city.js — no group rotation to account for.
+const env = { haze: HAZE, fog: layout.fog };
 const city = generateCity({ seed: P.seed, layout });
-const group = new THREE.Group();
-group.rotation.y = city.rotation;
-scene.add(group);
-const ground = createGround(city);
-const buildings = createBuildings(city);
-group.add(ground.mesh, buildings.mesh);
-const streams = createStreams(city, mulberry32(P.seed + 1), layout.streams);
-group.add(streams.mesh);
+const sky = createSky();
+const ground = createGround(city, env);
+const buildings = createBuildings(city.buildings, { ...env, nearDark: [layout.fog.near * 0.55, layout.fog.near * 0.9] });
+const landmarks = createLandmarks(layout, { ...env, fov: layout.camera.fov, fullH: P.fullH, dpr: renderer.getPixelRatio() });
+scene.add(sky.mesh, ground.group, buildings.mesh, landmarks.group);
 
 const composer = new EffectComposer(renderer);
 composer.addPass(new RenderPass(scene, camera));
-const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.4, 0.4, 0.35);
+const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.3, 0.35, 0.75);
 composer.addPass(bloom);
 composer.addPass(new OutputPass());
 
+// Stats HUD hidden for now — a minimal status UI may come back later. Forced off regardless of
+// the `overlay` URL param (which the app still passes to the showcase display) so it's a purely
+// scene-local, easily-reversible change; overlay.js/format.js are untouched underneath.
 const overlayEl = document.getElementById('overlay');
-overlayEl.hidden = !P.overlay;
+overlayEl.hidden = true;
 const overlay = createOverlay(overlayEl);
 
-const state = { a: 0, pulse: 0, districts: new Array(8).fill(0) };
-let target = { a: 0, pulse: 0, districts: new Array(8).fill(0) };
+// `a`/`pulse` drive only the sparse background silhouette's subtle window flicker — the same
+// stats transport the city already had. The four ATLAS landmarks are static this phase (no
+// per-area role attribution yet); see landmarks.js for their local-clock-only beacon animation.
+const state = { a: 0, pulse: 0 };
+let target = { a: 0, pulse: 0 };
 function applyStats(s) {
-  target = s
-    ? { a: activityLevel(s), pulse: pulseLevel(s.tokensPerMin), districts: districtBoosts(s.keys) }
-    : { a: 0, pulse: 0, districts: new Array(8).fill(0) };
+  target = s ? { a: activityLevel(s), pulse: pulseLevel(s.tokensPerMin) } : { a: 0, pulse: 0 };
   if (P.forceActivity >= 0) { target.a = P.forceActivity; state.a = P.forceActivity; }
   overlay.set(s);
 }
@@ -84,13 +88,11 @@ function frame(now) {
   last = now;
   state.a = easeToward(state.a, target.a, dt, 1);
   state.pulse = easeToward(state.pulse, target.pulse, dt, 1);
-  state.districts = state.districts.map((v, i) => easeToward(v, target.districts[i], dt, 1.5));
   for (const u of [ground.uniforms, buildings.uniforms]) {
     u.uActivity.value = state.a; u.uPulse.value = state.pulse; u.uTime.value = now / 1000;
   }
-  buildings.uniforms.uDistrict.value = state.districts;
-  streams.update(dt, state);
-  bloom.strength = 0.3 + 0.5 * state.a;
+  landmarks.update(now / 1000);
+  bloom.strength = 0.3 + 0.1 * state.a;
   composer.render(dt);
   overlay.tick(dt);
 }

@@ -1,39 +1,76 @@
 import * as THREE from 'three';
 
-export function createGround(city) {
-  const { ox, oz, pitch, cols, rows, street } = city.grid;
-  const W = cols * pitch + 3000, D = rows * pitch + 3000;
+/**
+ * Supporting environment on the ground: a near-black plane where only the avenues (every Nth street
+ * of the city grid) are faintly lighter — anti-aliased and fading with distance, so the eye reads
+ * "city" before "grid" — plus sparse warm streetlights along those avenues. Nothing here reacts
+ * to activity.
+ */
+export function createGround(city, { haze, fog }) {
+  const { angle, pitch, street, avenueEvery } = city.grid;
   const uniforms = {
     uActivity: { value: 0 }, uTime: { value: 0 }, uPulse: { value: 0 },
-    uGrid: { value: new THREE.Vector4(ox, oz, pitch, street) },
-    uFogColor: { value: new THREE.Color(0x0a0d14) }, uFogNear: { value: 3600 }, uFogFar: { value: 8500 },
+    uAngle: { value: angle }, uAvenue: { value: new THREE.Vector2(pitch * avenueEvery, street * 0.5) },
+    uBase: { value: new THREE.Color(0x06080d) }, uRoad: { value: new THREE.Color(0x0b0e15) },
+    uFogColor: { value: new THREE.Color(haze) }, uFogNear: { value: fog.near }, uFogFar: { value: fog.far },
   };
-  const mat = new THREE.ShaderMaterial({
-    uniforms,
+  const plane = new THREE.Mesh(
+    (() => { const g = new THREE.PlaneGeometry(40000, 40000); g.rotateX(-Math.PI / 2); return g; })(),
+    new THREE.ShaderMaterial({
+      uniforms,
+      vertexShader: /* glsl */`
+        varying vec2 vXZ; varying float vDepth;
+        void main() {
+          vXZ = position.xz;
+          vec4 mv = modelViewMatrix * vec4(position, 1.0);
+          vDepth = -mv.z;
+          gl_Position = projectionMatrix * mv;
+        }`,
+      fragmentShader: /* glsl */`
+        uniform float uAngle; uniform vec2 uAvenue; uniform vec3 uBase, uRoad;
+        uniform vec3 uFogColor; uniform float uFogNear, uFogFar;
+        varying vec2 vXZ; varying float vDepth;
+        void main() {
+          float c = cos(uAngle), s = sin(uAngle);
+          vec2 g = vec2(vXZ.x * c - vXZ.y * s, vXZ.x * s + vXZ.y * c);   // world → street-grid frame
+          vec2 m = mod(g + uAvenue.x * 0.5, uAvenue.x) - uAvenue.x * 0.5; // offset from nearest avenue
+          vec2 aa = fwidth(g) * 1.2;
+          vec2 road = 1.0 - smoothstep(uAvenue.y - aa, uAvenue.y + aa, abs(m));
+          float onRoad = max(road.x, road.y) * (1.0 - smoothstep(1500.0, 5000.0, vDepth));
+          vec3 col = mix(uBase, uRoad, onRoad);
+          col = mix(col, uFogColor, smoothstep(uFogNear, uFogFar, vDepth));
+          gl_FragColor = vec4(col, 1.0);
+        }`,
+    }),
+  );
+
+  const pts = new Float32Array(city.lights.length * 3);
+  city.lights.forEach(([x, z], i) => pts.set([x, 5, z], i * 3));
+  const lightGeo = new THREE.BufferGeometry();
+  lightGeo.setAttribute('position', new THREE.BufferAttribute(pts, 3));
+  const lights = new THREE.Points(lightGeo, new THREE.ShaderMaterial({
+    uniforms: {
+      uSize: { value: 1.6 * Math.min(devicePixelRatio, 2) },
+      uFogColor: uniforms.uFogColor, uFogNear: uniforms.uFogNear, uFogFar: uniforms.uFogFar,
+    },
     vertexShader: /* glsl */`
-      varying vec2 vXZ; varying float vDepth;
+      uniform float uSize; varying float vDepth;
       void main() {
-        vXZ = position.xz;
         vec4 mv = modelViewMatrix * vec4(position, 1.0);
         vDepth = -mv.z;
+        gl_PointSize = uSize;
         gl_Position = projectionMatrix * mv;
       }`,
     fragmentShader: /* glsl */`
-      uniform float uActivity; uniform vec4 uGrid; uniform vec3 uFogColor; uniform float uFogNear, uFogFar;
-      varying vec2 vXZ; varying float vDepth;
+      uniform vec3 uFogColor; uniform float uFogNear, uFogFar; varying float vDepth;
       void main() {
-        vec2 g = mod(vXZ - uGrid.xy, uGrid.z);
-        vec2 dist = min(g, uGrid.z - g);                 // distance to nearest street centerline
-        float onStreet = 1.0 - step(uGrid.w * 0.5, min(dist.x, dist.y));
-        float edge = 1.0 - smoothstep(0.0, 1.2, abs(min(dist.x, dist.y) - uGrid.w * 0.5));
-        vec3 block = vec3(0.012, 0.014, 0.019);
-        vec3 road = vec3(0.016, 0.016, 0.02) + vec3(0.012, 0.005, 0.002) * uActivity;
-        vec3 col = mix(block, road, onStreet) + vec3(0.006, 0.007, 0.01) * edge;
-        col = mix(col, uFogColor, smoothstep(uFogNear, uFogFar, vDepth) * 0.85);
+        vec3 col = mix(vec3(0.5, 0.36, 0.2), uFogColor, smoothstep(uFogNear, uFogFar, vDepth));
         gl_FragColor = vec4(col, 1.0);
       }`,
-  });
-  const geo = new THREE.PlaneGeometry(W, D);
-  geo.rotateX(-Math.PI / 2);
-  return { mesh: new THREE.Mesh(geo, mat), uniforms };
+  }));
+  lights.frustumCulled = false;
+
+  const group = new THREE.Group();
+  group.add(plane, lights);
+  return { group, uniforms };
 }

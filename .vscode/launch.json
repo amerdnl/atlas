@@ -1,0 +1,24 @@
+{
+  "configurations": [
+    {
+      "type": "swift",
+      "request": "launch",
+      "args": [],
+      "cwd": "${workspaceFolder:atlas}/app",
+      "name": "Debug Atlas (app)",
+      "target": "Atlas",
+      "configuration": "debug",
+      "preLaunchTask": "swift: Build Debug Atlas (app)"
+    },
+    {
+      "type": "swift",
+      "request": "launch",
+      "args": [],
+      "cwd": "${workspaceFolder:atlas}/app",
+      "name": "Release Atlas (app)",
+      "target": "Atlas",
+      "configuration": "release",
+      "preLaunchTask": "swift: Build Release Atlas (app)"
+    }
+  ]
+}
