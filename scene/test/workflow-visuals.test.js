@@ -5,7 +5,7 @@ import { ROLES, ROLE_IDS } from '../../workflow/roles.js';
 import { createWorkflowVisuals, createSample, STATUS_VISUALS, TIMING } from '../src/workflow-visuals.js';
 import { createDemoDriver, demoSchedule } from '../src/workflow-demo.js';
 import { ATLAS_AREAS } from '../src/atlas-areas.js';
-import { LAYOUTS } from '../src/layouts.js';
+import { composeWorld, COMPOSITIONS } from '../src/world.js';
 
 const SETTLE = Math.max(TIMING.riseMs, TIMING.fallMs) + 1;
 const T0 = 1_000_000;
@@ -21,8 +21,10 @@ function rig(opts) {
 const close = (a, b, eps = 1e-6) => Math.abs(a - b) <= eps;
 const colorOf = (role) => parseInt(ROLES[role].color.slice(1), 16);
 
-test('every role maps to one landmark in every layout, using the canonical role color', () => {
-  for (const name of Object.keys(LAYOUTS)) assert.deepEqual(LAYOUTS[name].areas.map((a) => a.key), ROLE_IDS);
+test('every role maps to one district in every composition, using the canonical role color', () => {
+  for (const name of Object.keys(COMPOSITIONS)) {
+    assert.deepEqual(composeWorld({ layout: name }).districts.filter((d) => d.role).map((d) => d.key), ROLE_IDS);
+  }
   for (const id of ROLE_IDS) assert.equal(ATLAS_AREAS[id].color, colorOf(id));
   assert.deepEqual(Object.keys(createSample().roles), ROLE_IDS);
 });

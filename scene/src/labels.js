@@ -1,17 +1,9 @@
 import * as THREE from 'three';
 import { ATLAS_AREAS } from './atlas-areas.js';
-import { LANDMARK, statusText } from './layouts.js';
-import { createBuildings } from './buildings.js';
-import { BREATHE_S } from './workflow-visuals.js';
+import { LABEL, statusText } from './layouts.js';
 
-const { podium: POD, tower: TWR, mastH, labelGapY, labelPx: LP, statusPx: SP } = LANDMARK;
+const { labelPx: LP, statusPx: SP } = LABEL;
 const hex = (c) => `#${c.toString(16).padStart(6, '0')}`;
-const TAU = Math.PI * 2;
-const WARN = new THREE.Color(0xff5a44);
-// Idle (role off): trim and mast read as ordinary dark architecture.
-const TRIM_OFF = new THREE.Color(0x1a1f2a);
-const MAST_OFF = new THREE.Color(0x2a2f39);
-const MAST_LOCAL = new THREE.Vector3(TWR.w * 0.22, TWR.h + mastH + 1.5, -TWR.d * 0.18);
 
 function canvasTexture(canvas) {
   const tex = new THREE.CanvasTexture(canvas);
@@ -70,8 +62,9 @@ function statusTexture(text, dpr) {
 }
 
 /**
- * Constant on-screen size, independent of distance and of which display slice renders it: with
- * sizeAttenuation off, a sprite of scale.y spans scale.y * cot(fov/2) * fullH / 2 CSS px.
+ * Constant on-screen size: `pxToWorld` converts CSS px to world units at the label (for a
+ * perspective camera with sizeAttenuation off it is 2·tan(fov/2)/fullH; for an orthographic
+ * camera laid out in CSS px it is 1).
  */
 function screenSprite(tex, heightPx, pxToWorld, dpr) {
   const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
@@ -83,23 +76,13 @@ function screenSprite(tex, heightPx, pxToWorld, dpr) {
 }
 
 /**
- * The four ATLAS areas as ordinary city buildings (podium + modest tower, same shader and palette
- * as the city) identified by restrained accents in their role color: upper-floor windows, a thin
- * cornice and corner edge, a faint facade reflection, a tiny mast light, and a small label with an
- * optional status line. How lit each one is comes entirely from `update(sample)` — the workflow
- * visual state — so nothing here decides what an agent is doing.
+ * Transient role labels — name plus a short status line — at fixed anchors. Visibility comes only
+ * from the sampled workflow visual state (`r.label`): hidden by default, shown briefly on
+ * activation and handoff arrival, held while blocked. `anchors` maps role → [x, y, z].
  */
-export function createLandmarks(layout, { haze, fog, fov, fullH, dpr }) {
+export function createRoleLabels(anchors, { pxToWorld, dpr }) {
   const group = new THREE.Group();
-  const bodies = [];
-  const corniceGeo = new THREE.BoxGeometry(TWR.w + 0.8, 2.2, TWR.d + 0.8);
-  const edgeGeo = new THREE.BoxGeometry(1.6, TWR.h * 0.44, 1.6);
-  const mastGeo = new THREE.BoxGeometry(1.4, mastH, 1.4);
-  const lightGeo = new THREE.SphereGeometry(2.6, 10, 8);
-  const rot = layout.gridAngle;
-  const pxToWorld = (2 * Math.tan((fov * Math.PI) / 360)) / fullH;
-  const anchors = {};
-  const statusCache = new Map(); // text → texture, shared by all four landmarks
+  const statusCache = new Map(); // text → texture, shared by all four labels
   const statusTex = (text) => {
     let tex = statusCache.get(text);
     if (!tex) {
@@ -109,57 +92,25 @@ export function createLandmarks(layout, { haze, fog, fov, fullH, dpr }) {
     }
     return tex;
   };
-
-  const parts = layout.areas.map(({ key, x, z }, i) => {
+  const parts = Object.entries(anchors).map(([key, [x, y, z]]) => {
     const { color, label } = ATLAS_AREAS[key];
-    const seed = 0.13 + i * 0.21;
-    bodies.push({ x, z, w: POD.w, d: POD.d, h: POD.h, rot, seed });
-    bodies.push({ x, z, w: TWR.w, d: TWR.d, h: TWR.h, rot, seed: seed + 0.07, accent: color, roleIndex: i });
-
-    const g = new THREE.Group();
-    g.position.set(x, 0, z);
-    g.rotation.y = rot;
-    const roleColor = new THREE.Color(color);
-    const edgeMat = new THREE.MeshBasicMaterial({ color: TRIM_OFF.clone() });
-    const cornice = new THREE.Mesh(corniceGeo, edgeMat);
-    cornice.position.y = TWR.h - 1.1;
-    // One thin vertical edge on the tower corner nearest the camera (+z), upper part only.
-    const [cu, cv] = [[1, 1], [1, -1], [-1, 1], [-1, -1]]
-      .map(([su, sv]) => [su * TWR.w / 2, sv * TWR.d / 2])
-      .reduce((best, c) => (-c[0] * Math.sin(rot) + c[1] * Math.cos(rot) > -best[0] * Math.sin(rot) + best[1] * Math.cos(rot) ? c : best));
-    const edge = new THREE.Mesh(edgeGeo, edgeMat);
-    edge.position.set(cu, TWR.h * 0.78, cv);
-    const mast = new THREE.Mesh(mastGeo, new THREE.MeshBasicMaterial({ color: 0x0b0e15 }));
-    mast.position.set(MAST_LOCAL.x, TWR.h + mastH / 2, MAST_LOCAL.z);
-    const lightMat = new THREE.MeshBasicMaterial({ color: MAST_OFF.clone(), toneMapped: false });
-    const light = new THREE.Mesh(lightGeo, lightMat);
-    light.position.copy(MAST_LOCAL);
-    g.add(cornice, edge, mast, light);
-    group.add(g);
-    anchors[key] = MAST_LOCAL.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), rot).add(new THREE.Vector3(x, 0, z));
-
-    // Label block above the mast: the status line sits at the anchor, the name just above it.
-    const labelY = TWR.h + mastH + labelGapY;
+    // The status line sits at the anchor, the name just above it.
     const name = screenSprite(labelTexture(label, color, dpr), LP.height, pxToWorld, dpr);
+    name.center.set(0.5, -SP.height / LP.height);
+    name.position.set(x, y, z);
     name.material.opacity = 0; // labels are transient: hidden until the role becomes active
     name.visible = false;
-    name.center.set(0.5, -SP.height / LP.height);
-    name.position.set(x, labelY, z);
     const status = [0, 1].map(() => {
       const sp = screenSprite(statusTex(' '), SP.height, pxToWorld, dpr);
       sp.center.set(0.5, 0);
-      sp.position.set(x, labelY, z);
+      sp.position.set(x, y, z);
       sp.material.opacity = 0;
+      sp.visible = false;
       return { sprite: sp, raw: null, text: null };
     });
     group.add(name, ...status.map((st) => st.sprite));
-
-    return { key, roleColor, edgeMat, lightMat, name, status };
+    return { key, name, status };
   });
-
-  const bodyMesh = createBuildings(bodies, { haze, fog });
-  group.add(bodyMesh.mesh);
-  const roleUniforms = bodyMesh.uniforms.uRole.value;
 
   function showStatus(st, text, opacity, warn) {
     if (text && text !== st.raw) { // only when the text actually changes — not every frame
@@ -176,26 +127,19 @@ export function createLandmarks(layout, { haze, fog, fov, fullH, dpr }) {
 
   return {
     group,
-    /** World position of each area's mast light — where handoff paths start and end. */
-    anchor: (key) => anchors[key],
-    /**
-     * Apply one sampled workflow visual state. `clock` is wall-clock seconds within the hour; every
-     * period used here divides 3600, so the hourly wrap is seamless.
-     */
-    update(sample, clock) {
-      bodyMesh.uniforms.uClock.value = clock;
+    /** Move the labels to new anchors (role → [x, y, z]), e.g. after the canvas was resized. */
+    setAnchors(next) {
+      for (const p of parts) {
+        const a = next[p.key];
+        if (!a) continue;
+        p.name.position.set(a[0], a[1], a[2]);
+        for (const st of p.status) st.sprite.position.set(a[0], a[1], a[2]);
+      }
+    },
+    /** Apply one sampled workflow visual state (allocation-free). */
+    update(sample) {
       for (let i = 0; i < parts.length; i++) {
         const p = parts[i], r = sample.roles[p.key];
-        roleUniforms[i].set(r.level, r.flow, r.wait, r.warn);
-        // Role color only in proportion to the light level: at idle (level 0) the trim and mast are
-        // plain dark architecture, indistinguishable from the rest of the city.
-        const on = Math.min(1, r.level / 0.45);
-        p.edgeMat.color.copy(TRIM_OFF).lerp(p.roleColor, on).multiplyScalar(1 - on + on * (0.3 + 0.45 * r.level));
-        const breath = 1
-          + 0.14 * r.flow * Math.sin(TAU * clock / BREATHE_S.working)
-          + 0.16 * r.wait * Math.sin(TAU * clock / BREATHE_S.waiting)
-          + 0.2 * r.warn * Math.sin(TAU * clock / BREATHE_S.blocked);
-        p.lightMat.color.copy(MAST_OFF).lerp(p.roleColor, on).lerp(WARN, r.warn).multiplyScalar(1 - on + on * (0.6 + 0.9 * r.level) * breath);
         // Name and status line share the transient label visibility. Status lines crossfade
         // sequentially, never overlapping: the old one out in the first half, the new one in the second.
         p.name.material.opacity = r.label;

@@ -1,19 +1,21 @@
-html, body { margin: 0; height: 100%; overflow: hidden; background: #05070b; cursor: none; }
+html, body { margin: 0; height: 100%; overflow: hidden; background: #0a1424; cursor: none; }
 canvas { display: block; }
 
-/* Bottom-left wallpaper HUD: three quiet rows, no card. Readable behind desktop icons, never loud. */
+/* Bottom-left wallpaper HUD: three quiet rows behind a hairline rule, no card. Readable behind
+   desktop icons, never loud. */
 #overlay {
-  position: fixed; left: 44px; bottom: var(--overlay-bottom, 72px); margin: 0;
-  display: grid; grid-template-columns: auto auto; column-gap: 18px; row-gap: 7px; align-items: baseline;
+  position: fixed; left: 44px; bottom: var(--overlay-bottom, 64px); margin: 0;
+  padding: 4px 0 4px 26px; border-left: 1px solid rgba(214, 222, 236, 0.2);
+  display: grid; grid-template-columns: auto auto; column-gap: 46px; row-gap: 17px; align-items: baseline;
   pointer-events: none; user-select: none;
-  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.65);
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.6);
 }
 #overlay[hidden] { display: none; }
 #overlay dt {
-  font: 600 10px/1 -apple-system, "SF Pro Text", system-ui, sans-serif;
-  letter-spacing: 0.22em; text-transform: uppercase; color: rgba(214, 222, 236, 0.46);
+  font: 500 12.5px/1 -apple-system, "SF Pro Text", system-ui, sans-serif;
+  letter-spacing: 0.12em; text-transform: uppercase; color: rgba(214, 222, 236, 0.48);
 }
 #overlay dd {
-  margin: 0; font: 500 13px/1 -apple-system, "SF Pro Text", system-ui, sans-serif;
-  font-variant-numeric: tabular-nums; letter-spacing: 0.02em; color: rgba(236, 240, 247, 0.8);
+  margin: 0; font: 500 13.5px/1 -apple-system, "SF Pro Text", system-ui, sans-serif;
+  font-variant-numeric: tabular-nums; letter-spacing: 0.03em; color: rgba(236, 240, 247, 0.84);
 }

@@ -72,7 +72,7 @@ test('unmanaged Claude activity counts in the HUD but never lights a role', () =
   // The collector sees Claude busy elsewhere (VS Code, a terminal, this session)…
   const stats = { working: 3, subagents: 4, projects: 2, tokensToday: 1_204_331 };
   assert.deepEqual(formatHud(hudValues(stats)), { projects: '2', agents: '7', tokens: '1,204,331' });
-  // …while the ATLAS runtime has no task: the only input to the landmarks says nothing is active.
+  // …while the ATLAS runtime has no task: the only input to the role districts says nothing is active.
   const v = createWorkflowVisuals();
   live(v).sync({ snapshot: createWorkflow({ now: () => T0 }).snapshot(), events: [] });
   assertAllOff(v.sample(T0 + 60_000), 'AGENTS > 0 with no ATLAS task');

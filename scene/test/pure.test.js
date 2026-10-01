@@ -2,10 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { activityLevel, pulseLevel, districtOf, districtBoosts, easeToward } from '../src/activity.js';
 import { readParams } from '../src/params.js';
-import { generateCity } from '../src/city.js';
 import { formatInt, formatHud, hudValues } from '../src/format.js';
 import { demoStats } from '../src/demo.js';
-import { LAYOUTS, LANDMARK, labelWidthPx, labelHeightPx, statusText, pickLayout } from '../src/layouts.js';
+import { LABEL, labelWidthPx, labelHeightPx, statusText, pickLayout } from '../src/layouts.js';
+import { composeWorld, COMPOSITIONS, CAMERA, DISTRICT_KEYS, LAND_Y, heightForY } from '../src/world.js';
 import { ATLAS_AREAS } from '../src/atlas-areas.js';
 import * as THREE from '../vendor/three/three.module.js';
 
@@ -41,7 +41,7 @@ test('easeToward converges', () => {
 
 test('readParams defaults to the window and reads slices', () => {
   assert.deepEqual(readParams('', { w: 800, h: 600 }),
-    { fullW: 800, fullH: 600, x: 0, y: 0, w: 800, h: 600, fps: 60, overlay: true, demo: false, seed: 7, forceActivity: -1, layout: null, workflowDemo: false, demoAt: -1, freeze: false });
+    { fullW: 800, fullH: 600, x: 0, y: 0, w: 800, h: 600, fps: 60, overlay: true, demo: false, seed: 7, forceActivity: -1, layout: null, workflowDemo: false, demoAt: -1, freeze: false, scene: 'reference' });
   const p = readParams('?fullW=5760&fullH=1080&x=1920&y=0&w=1920&h=1080&fps=30&overlay=0&demo=1', { w: 1, h: 1 });
   assert.equal(p.fullW, 5760); assert.equal(p.x, 1920); assert.equal(p.fps, 30);
   assert.equal(p.overlay, false); assert.equal(p.demo, true);
@@ -54,39 +54,8 @@ test('status line text is single-line and truncated for the label block', () => 
   assert.equal(statusText('running tests'), 'running tests');
   assert.equal(statusText('  reading\n requirements '), 'reading requirements');
   const long = statusText('Implementing sign-in, sign-out and session middleware');
-  assert.ok(long.length <= LANDMARK.statusPx.maxChars && long.endsWith('…'), long);
+  assert.ok(long.length <= LABEL.statusPx.maxChars && long.endsWith('…'), long);
   assert.equal(statusText(null), '');
-});
-
-const segDist = (p, a, b) => {
-  const dx = b.x - a.x, dz = b.z - a.z;
-  const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.z - a.z) * dz) / (dx * dx + dz * dz)));
-  return Math.hypot(p.x - (a.x + dx * t), p.z - (a.z + dz * t));
-};
-
-test('generateCity: deterministic, modest, low-rise, landmarks stand clear, corridors and foreground stay low', () => {
-  for (const [name, n] of [['single', 1], ['dual', 2], ['triple', 3]]) {
-    const layout = LAYOUTS[name];
-    const a = generateCity({ seed: 7, layout }), b = generateCity({ seed: 7, layout });
-    assert.deepEqual(a.buildings, b.buildings);
-    assert.deepEqual(a.lights, b.lights);
-    // Roughly one display's worth of city per display (the original scene had >3000 on triple).
-    const perDisplay = a.buildings.length / n;
-    assert.ok(perDisplay > 300 && perDisplay < 900, `${name}: ${a.buildings.length} buildings (${perDisplay | 0}/display)`);
-    const { minX, maxX, minZ, maxZ } = layout.field;
-    const loop = layout.areas.map((p, i) => [p, layout.areas[(i + 1) % layout.areas.length]]);
-    for (const bl of a.buildings) {
-      assert.ok(bl.x > minX && bl.x < maxX && bl.z > minZ && bl.z < maxZ);
-      assert.ok(bl.h > 0 && bl.h < LANDMARK.tower.h, `${name}: a city building out-tops the landmarks`);
-      const half = Math.hypot(bl.w, bl.d) / 2;
-      for (const ar of layout.areas) {
-        assert.ok(Math.hypot(bl.x - ar.x, bl.z - ar.z) >= LANDMARK.clearRadius + half, `${name}: building overlaps a landmark`);
-      }
-      if (loop.some(([p, q]) => segDist(bl, p, q) < 60 + half)) assert.ok(bl.h <= 22, `${name}: tall building in an activity corridor`);
-      if (bl.z > layout.frontZ) assert.ok(bl.h <= 26, `${name}: tall building in the foreground`);
-    }
-    assert.ok(a.grid.pitch > 0 && a.grid.avenueEvery >= 2, `${name}: ground needs the street grid, with sparse avenues`);
-  }
 });
 
 test('HUD: tokens are the full integer with thousands separators — never abbreviated, no decimals', () => {
@@ -134,106 +103,158 @@ test('pickLayout by canvas aspect, URL override wins', () => {
   assert.equal(pickLayout(16 / 9, 'bogus'), 'single');
 });
 
-test('every layout defines exactly the four ATLAS areas', () => {
-  for (const name of ['single', 'dual', 'triple']) {
-    const keys = LAYOUTS[name].areas.map((a) => a.key).sort();
-    assert.deepEqual(keys, Object.keys(ATLAS_AREAS).sort());
+
+// ---- the composed world (world.js), checked through the real camera ----
+
+function view(aspect) {
+  const cam = new THREE.PerspectiveCamera(CAMERA.fov, aspect, CAMERA.near, CAMERA.far);
+  cam.position.set(0, CAMERA.height, 0);
+  cam.rotation.x = (CAMERA.pitchDeg * Math.PI) / 180;
+  cam.updateMatrixWorld();
+  cam.updateProjectionMatrix();
+  const project = (x, y, z) => { const v = new THREE.Vector3(x, y, z).project(cam); return [(v.x + 1) / 2, (1 - v.y) / 2]; };
+  /** Where the ray through screen point (fx, fy) meets the water plane (null above the horizon). */
+  const onWater = (fx, fy) => {
+    const v = new THREE.Vector3(fx * 2 - 1, 1 - fy * 2, 0.5).unproject(cam).sub(cam.position).normalize();
+    if (v.y >= 0) return null;
+    const t = -cam.position.y / v.y;
+    return [cam.position.x + v.x * t, cam.position.z + v.z * t];
+  };
+  return { project, onWater };
+}
+
+// Canvas shapes each composition is used for, with their display count.
+const CANVASES = [[16 / 9, 1], [16 / 10, 1], [21 / 9, 1], [32 / 9, 2], [3.2, 2], [48 / 9, 3], [4.8, 3]];
+const tops = (b) => [b.x, b.y + b.h, b.z];
+const cv = (xs) => { const m = xs.reduce((a, b) => a + b, 0) / xs.length; return Math.sqrt(xs.reduce((a, b) => a + (b - m) ** 2, 0) / xs.length) / m; };
+
+test('world: deterministic per seed, different across seeds', () => {
+  const a = composeWorld({ aspect: 16 / 9, seed: 7 }), b = composeWorld({ aspect: 16 / 9, seed: 7 }), c = composeWorld({ aspect: 16 / 9, seed: 8 });
+  assert.deepEqual(a.buildings, b.buildings);
+  assert.deepEqual(a.lights, b.lights);
+  assert.deepEqual(a.trees, b.trees);
+  assert.notDeepEqual(a.buildings, c.buildings);
+});
+
+test('world: a level, cinematic view — horizon low in the frame, the top of the frame open sky', () => {
+  for (const [aspect] of CANVASES) {
+    const w = composeWorld({ aspect });
+    const { project } = view(aspect);
+    const [, horizon] = project(0, CAMERA.height, -1e6);
+    assert.ok(horizon > 0.55 && horizon < 0.65, `@${aspect.toFixed(2)} horizon at ${(horizon * 100) | 0}%`);
+    const things = [...w.buildings.map(tops), ...w.trees.map((t) => [t.x, t.y + t.h, t.z]), ...w.lights.map((l) => [l.x, l.y, l.z]),
+      ...w.mountains.flatMap((m) => m.points.map(([x, y]) => [x, y, -m.dist]))];
+    const highest = Math.min(...things.map((p) => project(...p)[1]));
+    assert.ok(highest > 0.4, `@${aspect.toFixed(2)} something reaches ${(highest * 100) | 0}% from the top — the sky must stay open`);
+    assert.ok(highest < 0.5, `@${aspect.toFixed(2)} the skyline should rise to near mid-frame (top at ${(highest * 100) | 0}%)`);
   }
 });
 
-/**
- * Screen-space boxes (CSS px on a fullH=1080 canvas) for each landmark — the whole massing (podium
- * + tower + mast, rotated with the street grid) and its label (constant pixel size, bottom-anchored
- * above the mast) — projected through the layout's real camera. World coordinates are exact:
- * nothing in the scene is rotated after placement.
- */
-function landmarkBoxes(layout, aspect) {
-  const H = 1080, W = H * aspect;
-  const { camera: c, areas, gridAngle } = layout;
-  const cam = new THREE.PerspectiveCamera(c.fov, aspect, 10, 24000);
-  cam.position.set(...c.position);
-  cam.lookAt(...c.lookAt);
-  cam.updateMatrixWorld();
-  const px = (x, y, z) => { const v = new THREE.Vector3(x, y, z).project(cam); return [(v.x + 1) / 2 * W, (1 - v.y) / 2 * H]; };
-  const { podium, tower, mastH, labelGapY, labelPx } = LANDMARK;
-  const cos = Math.cos(gridAngle), sin = Math.sin(gridAngle);
-  return areas.map((a) => {
-    const pts = [];
-    for (const [hw, hd, h] of [[podium.w / 2, podium.d / 2, podium.h], [tower.w / 2, tower.d / 2, tower.h + mastH]]) {
-      for (const [su, sv] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) {
-        const u = su * hw, v = sv * hd;
-        for (const y of [0, h]) pts.push(px(a.x + u * cos + v * sin, y, a.z - u * sin + v * cos));
-      }
+test('world: the central skyline is the anchor — tallest on screen, near the middle, neutral', () => {
+  const w = composeWorld({ aspect: 16 / 9 });
+  const { project } = view(16 / 9);
+  const center = w.districts.find((d) => d.key === 'center');
+  const [cx, cy] = project(...center.anchor);
+  assert.ok(cx > 0.45 && cx < 0.65, `center skyline at ${(cx * 100) | 0}% across`);
+  for (const d of w.districts) if (d.key !== 'center') assert.ok(project(...d.anchor)[1] > cy + 0.03, `${d.key} rises above the central skyline`);
+  const tallest = [...w.buildings].sort((a, b) => project(...tops(a))[1] - project(...tops(b))[1]).slice(0, 6);
+  for (const b of tallest) assert.equal(b.role, null, 'the tallest buildings are neutral, not a role district');
+});
+
+test('world: districts read left to right — Operations, Research, center, Developer, QA — in every composition', () => {
+  for (const [aspect] of CANVASES) {
+    const w = composeWorld({ aspect });
+    const { project } = view(aspect);
+    assert.deepEqual(w.districts.map((d) => d.key), DISTRICT_KEYS);
+    const xs = w.districts.map((d) => project(...d.anchor)[0]);
+    for (let i = 1; i < xs.length; i++) assert.ok(xs[i] > xs[i - 1] + 0.05, `@${aspect.toFixed(2)} ${DISTRICT_KEYS[i]} is right of ${DISTRICT_KEYS[i - 1]}`);
+    for (const role of ['operations', 'research', 'developer', 'qa']) {
+      assert.ok(w.buildings.filter((b) => b.role === role).length >= 15, `${role} is a district, not a single tower`);
     }
-    const [lx, ly] = px(a.x, tower.h + mastH + labelGapY, a.z);
-    const lw = labelWidthPx(ATLAS_AREAS[a.key].label);
-    return {
-      key: a.key, W, H,
-      body: { x0: Math.min(...pts.map((p) => p[0])), x1: Math.max(...pts.map((p) => p[0])), y0: Math.min(...pts.map((p) => p[1])), y1: Math.max(...pts.map((p) => p[1])) },
-      label: { x0: lx - lw / 2, x1: lx + lw / 2, y0: ly - labelHeightPx(), y1: ly }, // name + status line
-    };
+  }
+});
+
+/** Screen box (CSS px on a fullH = 1080 canvas) of each role district's label block. */
+function labelBoxes(aspect) {
+  const w = composeWorld({ aspect });
+  const { project } = view(aspect);
+  const H = 1080, W = H * aspect;
+  return w.districts.filter((d) => d.role).map((d) => {
+    const [fx, fy] = project(...d.anchor);
+    const lw = labelWidthPx(ATLAS_AREAS[d.key].label);
+    return { key: d.key, W, H, x0: fx * W - lw / 2, x1: fx * W + lw / 2, y0: fy * H - labelHeightPx(), y1: fy * H };
   });
 }
 
-// Aspect ratios pickLayout routes into each bucket, with the display count they typically mean
-// (the narrowest — two or three 16:10 displays — is the tightest fit).
-const CANVASES = {
-  single: [[16 / 9, 1], [16 / 10, 1], [21 / 9, 1]],
-  dual: [[32 / 9, 2], [3.2, 2], [4.3, 2]],
-  triple: [[48 / 9, 3], [4.8, 3], [5.7, 3]],
-};
-
-test('every landmark and label is fully on screen with breathing room, in every layout', () => {
-  for (const [name, canvases] of Object.entries(CANVASES)) {
-    for (const [aspect] of canvases) {
-      for (const { key, W, H, body, label } of landmarkBoxes(LAYOUTS[name], aspect)) {
-        const margin = 0.06 * H; // ≈65px at 1080p
-        for (const [what, b] of [['building', body], ['label', label]]) {
-          const where = `${name} @${aspect.toFixed(2)} ${key} ${what}`;
-          assert.ok(b.x0 > margin && b.x1 < W - margin, `${where}: too close to a side edge (${b.x0 | 0}..${b.x1 | 0} of ${W | 0})`);
-          assert.ok(b.y0 > 0.25 * H && b.y1 < 0.85 * H, `${where}: outside the city band (${b.y0 | 0}..${b.y1 | 0})`);
-        }
+test('labels: on screen with breathing room, never overlapping, never across a display seam', () => {
+  for (const [aspect, n] of CANVASES) {
+    const boxes = labelBoxes(aspect);
+    for (const b of boxes) {
+      const where = `@${aspect.toFixed(2)} ${b.key}`;
+      assert.ok(b.x0 > 0.03 * b.H && b.x1 < b.W - 0.03 * b.H, `${where}: too close to a side edge`);
+      assert.ok(b.y0 > 0.35 * b.H && b.y1 < 0.7 * b.H, `${where}: outside the skyline band`);
+      for (let k = 1; k < n; k++) {
+        const seam = (k * b.W) / n;
+        assert.ok(b.x1 < seam - 30 || b.x0 > seam + 30, `${where}: crosses the seam at ${seam | 0}px`);
+      }
+    }
+    for (let i = 0; i < boxes.length; i++) {
+      for (let j = i + 1; j < boxes.length; j++) {
+        const a = boxes[i], b = boxes[j];
+        assert.ok(!(a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1), `@${aspect.toFixed(2)}: ${a.key} and ${b.key} labels overlap`);
       }
     }
   }
 });
 
-test('no landmark or label straddles a display seam on multi-display layouts', () => {
-  for (const [name, canvases] of Object.entries(CANVASES)) {
-    for (const [aspect, n] of canvases) {
-      if (n === 1) continue;
-      for (const { key, W, body, label } of landmarkBoxes(LAYOUTS[name], aspect)) {
-        for (let k = 1; k < n; k++) {
-          const seam = (k * W) / n, gap = 40;
-          for (const b of [body, label]) {
-            assert.ok(b.x1 < seam - gap || b.x0 > seam + gap, `${name} @${aspect.toFixed(2)} ${key}: crosses the seam at ${seam | 0}px`);
-          }
-        }
-      }
+test('world: buildings stand on land behind the shore; the city varies instead of repeating', () => {
+  for (const [aspect] of CANVASES) {
+    const w = composeWorld({ aspect });
+    for (const b of w.buildings) {
+      if (b.bridge) continue;
+      const dist = -b.z;
+      assert.ok(dist >= w.shoreDist(w.fOf(b.x, dist)) - 2, `@${aspect.toFixed(2)} a building stands in the water at ${b.x | 0},${b.z | 0}`);
+      assert.ok(b.y >= LAND_Y - 1e-9 || b.kind === 'dome' || b.kind === 'cyl', 'buildings start at ground level');
     }
+    const city = w.buildings.filter((b) => !b.bridge);
+    assert.ok(cv(city.map((b) => b.h)) > 0.6, 'heights vary widely');
+    assert.ok(cv(city.map((b) => b.w)) > 0.3, 'widths vary');
+    const keys = new Set(city.map((b) => `${b.kind}|${b.x.toFixed(1)}|${b.z.toFixed(1)}|${b.w.toFixed(1)}|${b.h.toFixed(1)}`));
+    assert.equal(keys.size, city.length, 'no duplicated buildings');
+    assert.ok(w.buildings.some((b) => b.kind === 'dome') && w.buildings.some((b) => b.kind === 'wedge'), 'domes and angular halls, not only boxes');
   }
 });
 
-test('labels never overlap each other, and the city sits below a band of open sky', () => {
-  for (const [name, canvases] of Object.entries(CANVASES)) {
-    for (const [aspect] of canvases) {
-      const boxes = landmarkBoxes(LAYOUTS[name], aspect);
-      for (let i = 0; i < boxes.length; i++) {
-        for (let j = i + 1; j < boxes.length; j++) {
-          const a = boxes[i].label, b = boxes[j].label;
-          const overlap = a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
-          assert.ok(!overlap, `${name} @${aspect.toFixed(2)}: ${boxes[i].key} and ${boxes[j].key} labels overlap`);
-        }
-      }
-      // The visible skyline is where the city's far edge dissolves into haze (the true horizon above it
-      // is haze-on-haze, invisible). It should leave roughly the top third-to-half of the frame as sky.
-      const { camera: c, field } = LAYOUTS[name];
-      const cam = new THREE.PerspectiveCamera(c.fov, aspect, 10, 24000);
-      cam.position.set(...c.position);
-      cam.lookAt(...c.lookAt);
-      cam.updateMatrixWorld();
-      const edgeY = (1 - new THREE.Vector3(0, 0, field.minZ).project(cam).y) / 2;
-      assert.ok(edgeY > 0.35 && edgeY < 0.55, `${name}: city's far edge at ${(edgeY * 100) | 0}% from top`);
-    }
+test('world: open water in the middle of the bay, dark land framing the bottom corners', () => {
+  for (const [aspect] of CANVASES.filter(([, n]) => n === 1)) {
+    const w = composeWorld({ aspect });
+    const { onWater } = view(aspect);
+    const landAt = (fx, fy) => { const p = onWater(fx, fy); return w.terrain.mounds.some((m) => w.moundHeight(m, p[0], p[1]) > 0); };
+    for (const [fx, fy] of [[0.5, 0.72], [0.45, 0.78], [0.55, 0.76], [0.42, 0.86]]) assert.ok(!landAt(fx, fy), `@${aspect.toFixed(2)} water expected at ${fx},${fy}`);
+    for (const [fx, fy] of [[0.03, 0.97], [0.97, 0.97], [0.03, 0.85], [0.97, 0.85]]) assert.ok(landAt(fx, fy), `@${aspect.toFixed(2)} foreground land expected at ${fx},${fy}`);
+  }
+});
+
+test('world: layered mountains (three ranges plus the far shore\'s hills), lighter with distance, the prominent peak on the right', () => {
+  const w = composeWorld({ aspect: 16 / 9 });
+  const { project } = view(16 / 9);
+  assert.equal(w.mountains.length, 4);
+  const lum = (c) => ((c >> 16) & 255) + ((c >> 8) & 255) + (c & 255);
+  const byDist = [...w.mountains].sort((a, b) => b.dist - a.dist);
+  for (let i = 1; i < byDist.length; i++) assert.ok(lum(byDist[i].color) < lum(byDist[i - 1].color), 'nearer layers are darker');
+  const peak = w.mountains.flatMap((m) => m.points.map(([x, y]) => project(x, y, -m.dist))).sort((a, b) => a[1] - b[1])[0];
+  assert.ok(peak[0] > 0.6 && peak[0] < 0.95, `highest peak at ${(peak[0] * 100) | 0}% across`);
+});
+
+test('heightForY places a top exactly where asked on screen', () => {
+  const { project } = view(16 / 9);
+  for (const [y, d] of [[0.7, 800], [0.65, 2500], [0.75, 600]]) {
+    assert.ok(Math.abs(project(0, heightForY(y, d), -d)[1] - y) < 1e-6);
+  }
+});
+
+test('every composition defines exactly the four ATLAS role districts plus the neutral center', () => {
+  for (const name of Object.keys(COMPOSITIONS)) {
+    assert.deepEqual(Object.keys(COMPOSITIONS[name].districts).sort(), [...Object.keys(ATLAS_AREAS), 'center'].sort());
   }
 });

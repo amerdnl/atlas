@@ -1,4 +1,4 @@
-/** How long a lost connection is tolerated before the landmarks stop claiming any state. */
+/** How long a lost connection is tolerated before the role districts stop claiming any state. */
 export const OFFLINE_GRACE_MS = 4000;
 
 /**

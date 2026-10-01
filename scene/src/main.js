@@ -1,65 +1,30 @@
 import * as THREE from 'three';
-import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
-import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
-import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
-import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { readParams } from './params.js';
-import { generateCity } from './city.js';
 import { activityLevel, pulseLevel, easeToward } from './activity.js';
-import { createGround } from './ground.js';
-import { createBuildings } from './buildings.js';
-import { createLandmarks } from './landmarks.js';
-import { createSky, HAZE } from './sky.js';
-import { createHandoffPaths } from './handoff-paths.js';
+import { createReferenceScene } from './reference-scene.js';
+import { createProceduralScene } from './procedural-scene.js';
 import { createWorkflowVisuals, createSample } from './workflow-visuals.js';
 import { createDemoDriver } from './workflow-demo.js';
 import { connectWorkflow } from './workflow-client.js';
 import { createOverlay } from './overlay.js';
 import { connectStats } from './stats-client.js';
 import { demoStats } from './demo.js';
-import { LAYOUTS, pickLayout } from './layouts.js';
 
 const P = readParams(location.search, { w: innerWidth, h: innerHeight });
+const readView = () => readParams(location.search, { w: innerWidth, h: innerHeight });
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.setSize(innerWidth, innerHeight);
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMapping = THREE.NoToneMapping; // colors are authored in display values: what's written is what's seen
+renderer.info.autoReset = false; // count every pass of a frame together (reset per frame below)
 document.body.appendChild(renderer.domElement);
 
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(HAZE);
-
-// The canvas shape (1, 2 or 3 displays wide) picks the composition.
-const layout = LAYOUTS[pickLayout(P.fullW / P.fullH, P.layout)];
-
-// One camera frames the whole multi-display canvas; each window renders its own slice of it.
-const camera = new THREE.PerspectiveCamera(layout.camera.fov, P.fullW / P.fullH, 10, 24000);
-camera.position.set(...layout.camera.position);
-camera.lookAt(...layout.camera.lookAt);
-const applyView = () => {
-  const p = readParams(location.search, { w: innerWidth, h: innerHeight });
-  camera.aspect = p.fullW / p.fullH;
-  camera.setViewOffset(p.fullW, p.fullH, p.x, p.y, p.w, p.h);
-  camera.updateProjectionMatrix();
-};
-applyView();
-
-// Everything is placed in world space by layouts.js/city.js — no group rotation to account for.
-const env = { haze: HAZE, fog: layout.fog };
-const city = generateCity({ seed: P.seed, layout });
-const sky = createSky();
-const ground = createGround(city, env);
-const buildings = createBuildings(city.buildings, { ...env, nearDark: [layout.fog.near * 0.55, layout.fog.near * 0.9] });
-const landmarks = createLandmarks(layout, { ...env, fov: layout.camera.fov, fullH: P.fullH, dpr: renderer.getPixelRatio() });
-const paths = createHandoffPaths({ anchor: landmarks.anchor, camera, fov: layout.camera.fov, fullH: P.fullH });
-scene.add(sky.mesh, ground.group, buildings.mesh, landmarks.group, paths.group);
-
-const composer = new EffectComposer(renderer);
-composer.addPass(new RenderPass(scene, camera));
-const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.3, 0.35, 0.75);
-composer.addPass(bloom);
-composer.addPass(new OutputPass());
+// The picture: the reference artwork with ATLAS's live layer on top (default), or the procedural
+// city (`?scene=procedural`). Both share the same live inputs, frame policy and HUD below.
+const view = P.scene === 'procedural'
+  ? createProceduralScene({ renderer, P, readView })
+  : createReferenceScene({ renderer, P, readView, invalidate: () => { lastDraw = 0; } });
 
 // Bottom-left HUD (collector stats) on the display the app marks with overlay=1 (the left-most).
 const overlayEl = document.getElementById('overlay');
@@ -67,8 +32,8 @@ overlayEl.hidden = !P.overlay;
 const overlay = createOverlay(overlayEl);
 
 // Two separate inputs, never mixed:
-// - collector stats (overall Claude telemetry) → the HUD, and the background city's subtle windows;
-// - workflow events (ATLAS roles/tasks) → the four landmarks and the handoff paths.
+// - collector stats (overall Claude telemetry) → the HUD, and the city's neutral windows (subtly);
+// - workflow events (ATLAS roles/tasks) → the four role districts, their labels and the handoff paths.
 // Exactly one workflow source per page, chosen at load: the demo (in-memory, this page only) or
 // the one authoritative ATLAS runtime (in the collector). Switching modes reloads the page, so
 // demo state never reaches a live page and vice versa. With no task running every role is off.
@@ -83,39 +48,41 @@ const wallClock = () => frozenAt ?? Date.now() + clockOffset;
 
 const state = { a: 0, pulse: 0 };
 let target = { a: 0, pulse: 0 };
+let statsKey = '';
 function applyStats(s) {
   target = s ? { a: activityLevel(s), pulse: pulseLevel(s.tokensPerMin) } : { a: 0, pulse: 0 };
   if (P.forceActivity >= 0) { target.a = P.forceActivity; state.a = P.forceActivity; }
   overlay.set(s);
+  // Only a change that moves something on screen wakes an idle page (tokens are plain DOM text).
+  const key = s ? `${target.a}|${s.projects}|${s.working}|${s.subagents}` : '';
+  if (key !== statsKey) { statsKey = key; lastDraw = 0; }
 }
 if (P.demo) { const t0 = performance.now(); setInterval(() => applyStats(demoStats((performance.now() - t0) / 1000)), 500); }
 else connectStats(applyStats);
 
-let paused = false, last = performance.now(), lastDraw = 0, moving = true, lit = false;
+let paused = false, last = performance.now(), lastDraw = 0, moving = true, lit = false, renders = 0;
 function frame(now) {
   if (paused) return;
   requestAnimationFrame(frame);
   // Full frame rate only while something visibly moves (a light turning on/off, a working role's
-  // flow, a label fading, a path); slow pulses and held labels redraw at 10 fps; a fully idle city
-  // at 4 fps. A new live event forces the next frame (lastDraw = 0), so nothing starts late.
-  const fps = moving ? P.fps : Math.min(P.fps, lit || workflowDemo ? 10 : 4); // the demo steps on frames
+  // flow, a label fading, a path); slow pulses and held labels redraw at 10 fps. A fully idle city
+  // is static, so it is redrawn only when something changes (a new live event or stats update sets
+  // lastDraw = 0), with a slow safety redraw.
+  const fps = moving ? P.fps : lit || workflowDemo ? Math.min(P.fps, 10) : 0.5; // the demo steps on frames
   if (now - lastDraw < 1000 / fps - 2) return;
   lastDraw = now;
   const dt = Math.min(0.1, (now - last) / 1000);
   last = now;
   state.a = easeToward(state.a, target.a, dt, 1);
   state.pulse = easeToward(state.pulse, target.pulse, dt, 1);
-  for (const u of [ground.uniforms, buildings.uniforms]) {
-    u.uActivity.value = state.a; u.uPulse.value = state.pulse; u.uTime.value = now / 1000;
-  }
   const wall = wallClock();
   workflowDemo?.update(wall);
   visuals.sample(wall, visual);
   const clock = (wall % 3_600_000) / 1000;
-  landmarks.update(visual, clock);
-  paths.update(visual);
-  bloom.strength = 0.3 + 0.1 * state.a;
-  composer.render(dt);
+  view.update(visual, clock, state.a);
+  renderer.info.reset();
+  view.render(dt);
+  renders++;
   const hudMoving = overlay.tick(dt);
   moving = visual.busy || hudMoving || Math.abs(state.a - target.a) > 0.005;
   lit = visual.active;
@@ -123,9 +90,11 @@ function frame(now) {
 requestAnimationFrame(frame);
 
 addEventListener('resize', () => {
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2)); // moving between displays can change it
   renderer.setSize(innerWidth, innerHeight);
-  composer.setSize(innerWidth, innerHeight);
-  applyView();
+  view.resize(innerWidth, innerHeight);
+  view.applyView();
+  lastDraw = 0;
 });
 
 window.atlas = {
@@ -137,8 +106,10 @@ window.atlas = {
   setFps(f) { P.fps = f; },
   // Debug: render one frame and return the canvas as a PNG blob (used for screenshot tuning).
   capture() {
-    composer.render(0);
+    view.render(0);
     return new Promise((resolve) => renderer.domElement.toBlob(resolve, 'image/png'));
   },
   setOverlayBottom(px) { overlayEl.style.setProperty('--overlay-bottom', `${px}px`); },
+  // Debug: how many frames were drawn, and the cost of the last one.
+  info: () => ({ renders, calls: renderer.info.render.calls, triangles: renderer.info.render.triangles, moving, lit, busy: visual.busy, a: state.a, target: target.a }),
 };

@@ -7,9 +7,11 @@ export function readParams(search, win) {
     fullW: num('fullW', w), fullH: num('fullH', h), x: num('x', 0), y: num('y', 0), w, h,
     fps: num('fps', 60), overlay: q.get('overlay') !== '0', demo: q.get('demo') === '1', seed: num('seed', 7),
     forceActivity: num('a', -1), layout: q.get('layout'),
-    // `workflow=demo` plays the workflow demo on the landmarks (demo=1 implies it, with fake HUD stats too).
+    // `workflow=demo` plays the workflow demo on the role districts (demo=1 implies it, with fake HUD stats too).
     // `demoAt=S` starts this page S seconds into the demo loop — a review/screenshot aid.
     // `freeze=1` (with demoAt) pins the clock there: every visual is a function of time, so this renders that exact moment.
     workflowDemo: q.get('demo') === '1' || q.get('workflow') === 'demo', demoAt: num('demoAt', -1), freeze: q.get('freeze') === '1',
+    // `scene=procedural` shows the procedural 3D city (fallback/debug); the default is the reference art.
+    scene: q.get('scene') === 'procedural' ? 'procedural' : 'reference',
   };
 }

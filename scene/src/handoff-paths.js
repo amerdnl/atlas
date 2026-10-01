@@ -27,9 +27,10 @@ function dotTexture() {
  *
  * A small fixed pool of slots is reused: activating a path writes its endpoints and color into
  * uniforms (the quad's vertices are computed in the shader), so nothing is allocated per frame.
- * The line is billboarded once per activation against the (static) camera, ~1.4 px wide.
+ * The line is billboarded once per activation against the (static) camera, ~1.4 px wide. With
+ * `ortho` (a 2D scene laid out in CSS px) widths and sizes are plain pixels.
  */
-export function createHandoffPaths({ anchor, camera, fov, fullH }) {
+export function createHandoffPaths({ anchor, camera, fov, fullH, ortho = false }) {
   const group = new THREE.Group();
   const quad = new THREE.BufferGeometry();
   quad.setAttribute('position', new THREE.BufferAttribute(new Float32Array([0, -1, 0, 1, -1, 0, 0, 1, 0, 1, 1, 0]), 3));
@@ -59,6 +60,7 @@ export function createHandoffPaths({ anchor, camera, fov, fullH }) {
           float behind = uProgress - vAlong;
           float trail = behind >= 0.0 ? exp(-behind * 9.0) : 0.0; // brightest just behind the point
           gl_FragColor = vec4(uColor, uOpacity * ends * (0.14 + 0.55 * trail));
+          #include <colorspace_fragment>
         }`,
       transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false,
     }));
@@ -68,7 +70,7 @@ export function createHandoffPaths({ anchor, camera, fov, fullH }) {
     const point = new THREE.Sprite(new THREE.SpriteMaterial({
       map: dot, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, sizeAttenuation: false, toneMapped: false,
     }));
-    const s = (POINT_PX * 2 * tanHalf) / fullH;
+    const s = ortho ? POINT_PX : (POINT_PX * 2 * tanHalf) / fullH;
     point.scale.set(s, s, 1);
     point.visible = false;
     point.renderOrder = 6;
@@ -81,8 +83,9 @@ export function createHandoffPaths({ anchor, camera, fov, fullH }) {
     u.uA.value.copy(a);
     u.uB.value.copy(b);
     mid.addVectors(a, b).multiplyScalar(0.5);
-    view.subVectors(mid, camera.position);
-    const halfWidth = (LINE_PX / 2) * (2 * view.length() * tanHalf) / fullH; // world units for LINE_PX at this distance
+    if (ortho) view.set(0, 0, -1);
+    else view.subVectors(mid, camera.position);
+    const halfWidth = ortho ? LINE_PX / 2 : (LINE_PX / 2) * (2 * view.length() * tanHalf) / fullH; // world units for LINE_PX at this distance
     u.uSide.value.crossVectors(dir.subVectors(b, a), view).normalize().multiplyScalar(halfWidth);
     u.uColor.value.set(color);
     slot.point.material.color.set(color);
@@ -92,6 +95,8 @@ export function createHandoffPaths({ anchor, camera, fov, fullH }) {
 
   return {
     group,
+    /** Anchors moved (e.g. a resize): re-place every visible path on its next update. */
+    invalidate() { for (const slot of slots) { slot.from = null; slot.to = null; } },
     /** Show the sampled paths (see workflow-visuals `sample`). */
     update(sample) {
       for (let i = 0; i < MAX_PATHS; i++) {
