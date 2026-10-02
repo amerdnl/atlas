@@ -1,4 +1,5 @@
 import { ROLE_IDS } from '../../workflow/roles.js';
+import { isTerminal } from '../../workflow/stages.js';
 import { ATLAS_AREAS } from './atlas-areas.js';
 
 /**
@@ -34,6 +35,8 @@ export const STATUS_VISUALS = Object.freeze({
   working: Object.freeze({ level: 0.85, flow: 1, wait: 0, warn: 0 }),
   waiting: Object.freeze({ level: 0.5, flow: 0, wait: 1, warn: 0 }),
   blocked: Object.freeze({ level: 0.45, flow: 0, wait: 0, warn: 1 }),
+  // ATLAS stopped mid-stage: the district dimly identifiable with a slow pulse — not active work, not a warning.
+  interrupted: Object.freeze({ level: 0.25, flow: 0, wait: 1, warn: 0 }),
 });
 const visualsFor = (status) => STATUS_VISUALS[status] ?? STATUS_VISUALS.blocked; // unknown non-idle states read as needing attention
 const CHANNELS = ['level', 'flow', 'wait', 'warn'];
@@ -150,11 +153,11 @@ export function createWorkflowVisuals() {
         abortPaths(event.at, event.taskId);
         stages.set(event.taskId, p.to);
         return;
-      case 'task_completed': case 'task_failed':
+      case 'task_completed': case 'task_failed': case 'task_cancelled':
         abortPaths(event.at, event.taskId);
         stages.delete(event.taskId);
         return;
-      case 'agent_assigned': case 'agent_started': case 'agent_waiting': case 'agent_blocked': case 'agent_idle': case 'agent_progress': {
+      case 'agent_assigned': case 'agent_started': case 'agent_waiting': case 'agent_blocked': case 'agent_idle': case 'agent_progress': case 'agent_interrupted': {
         const role = p.agent.role;
         const r = roles[role];
         if (!r) return;
@@ -202,7 +205,7 @@ export function createWorkflowVisuals() {
    * snapshot's own `since`.
    */
   function seed(snapshot) {
-    for (const t of snapshot?.tasks ?? []) if (t.stage !== 'completed' && t.stage !== 'failed') stages.set(t.id, t.stage);
+    for (const t of snapshot?.tasks ?? []) if (!isTerminal(t.stage)) stages.set(t.id, t.stage);
     for (const a of snapshot?.agents ?? []) {
       const r = roles[a.role];
       if (!r) continue;
@@ -211,7 +214,7 @@ export function createWorkflowVisuals() {
       if (status === a.status && (a.status === 'idle' || last.taskId === a.taskId)) continue;
       push(a.role, LATE_SEQ, a.taskId ?? null, a.status, Math.max(a.since ?? -Infinity, last?.at ?? -Infinity));
     }
-    const open = new Set((snapshot?.tasks ?? []).filter((t) => t.stage !== 'completed' && t.stage !== 'failed').map((t) => t.id));
+    const open = new Set((snapshot?.tasks ?? []).filter((t) => !isTerminal(t.stage)).map((t) => t.id));
     if (snapshot?.tasks) for (const p of paths) if (!open.has(p.taskId)) abortPaths(p.startedAt + TIMING.travelMs, p.taskId);
   }
 

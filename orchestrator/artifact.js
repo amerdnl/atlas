@@ -32,8 +32,19 @@ export function createArtifact({ taskId, goal, acceptanceCriteria = [], project 
     finalSummary: '',
     finalChecks: [],
     notes: [],
+    interventions: [],
     history: [],
   };
+}
+
+/** Record a blocked role's question and the person's answer, so every later role can see it. */
+export function recordIntervention(artifact, pause) {
+  const a = structuredClone(artifact);
+  a.interventions = [...(a.interventions ?? []), {
+    role: pause.role, stage: pause.stage, reason: pause.reason, question: pause.question ?? null,
+    suggestedActions: pause.suggestedActions ?? [], response: pause.response ?? null, askedAt: pause.at, respondedAt: pause.respondedAt ?? null,
+  }];
+  return a;
 }
 
 const union = (a, b) => [...new Set([...a, ...b])];
@@ -77,7 +88,8 @@ export function routeArtifact(artifact, { stage, fromRole, toRole }) {
 
 /** The parts of the artifact a role needs to read, by stage — keeps prompts small. */
 export function artifactView(artifact, stage) {
-  const base = { taskId: artifact.taskId, goal: artifact.goal, acceptanceCriteria: artifact.acceptanceCriteria, currentStage: stage, fromRole: artifact.fromRole, notes: artifact.notes };
+  const guidance = (artifact.interventions ?? []).filter((i) => i.response).map(({ role, stage: s, question, reason, response }) => ({ role, stage: s, question: question ?? reason, answer: response }));
+  const base = { taskId: artifact.taskId, goal: artifact.goal, acceptanceCriteria: artifact.acceptanceCriteria, currentStage: stage, fromRole: artifact.fromRole, notes: artifact.notes, ...(guidance.length ? { humanGuidance: guidance } : {}) };
   const research = { relevantFiles: artifact.relevantFiles, findings: artifact.findings, decisions: artifact.decisions, risks: artifact.risks };
   const dev = { implementationSummary: artifact.implementationSummary, changedFiles: artifact.changedFiles, testsRun: artifact.testsRun, caveats: artifact.caveats };
   const qa = { qaSummary: artifact.qaSummary, qaChecks: artifact.qaChecks, qaEvidence: artifact.qaEvidence, qaFailures: artifact.qaFailures, recommendedRework: artifact.recommendedRework };

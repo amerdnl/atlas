@@ -68,8 +68,9 @@ export function systemPrompt(role, cwd) {
 }
 
 /** User prompt for one stage: the task, the relevant artifact slice, what to do, what to return. */
-export function stagePrompt({ role, stage, task, artifact, project, changes = null }) {
+export function stagePrompt({ role, stage, task, artifact, project, changes = null, preamble = null }) {
   const lines = [
+    ...(preamble ? [preamble, ''] : []),
     `Task ${task.id} — stage: ${stage} (you are ${ROLES[role].name}${task.attempt > 1 && (stage === 'rework' || stage === 'testing') ? `, attempt ${task.attempt}` : ''}).`,
     `Request: ${task.description || task.title}`,
     `Project: ${project.cwd}${project.branch ? ` (git branch ${project.branch})` : ''}`,
@@ -82,9 +83,32 @@ export function stagePrompt({ role, stage, task, artifact, project, changes = nu
   if (changes) {
     lines.push('', 'Change summary since the task started (from git):', changes.status.length ? changes.status.join('\n') : '(no changes)', changes.diffStat || '');
   }
-  lines.push('', `Return: ${RETURN[stage]}.`);
+  lines.push('', `Return: ${RETURN[stage]}.`, 'If you cannot proceed without a human decision, return status "blocked" with a summary, a precise question, and suggestedActions.');
   return lines.join('\n');
 }
+
+/**
+ * Sent when a paused stage continues its own earlier conversation: after a person answered a
+ * blocked role's question, or after ATLAS itself was interrupted mid-stage.
+ */
+export function continuePrompt({ kind, stage, pause, note = null }) {
+  const lines = kind === 'blocked'
+    ? [
+      `A person has responded to your blocker in the ${stage} stage.`,
+      pause.question ? `Your question: ${pause.question}` : `Your blocker: ${pause.reason}`,
+      `Their answer: ${pause.response ?? '(no written answer — they resolved it and asked you to continue)'}`,
+      `Continue the ${stage} stage with this guidance and return the structured result.`,
+    ]
+    : [
+      `ATLAS stopped while you were working on the ${stage} stage (${pause.reason}).`,
+      'Some of your earlier work may already be applied. Check the current state of the project, finish the stage, and return the structured result.',
+    ];
+  if (note) lines.push(`Note from the person: ${note}`);
+  return lines.join('\n');
+}
+
+/** Opening line for a stage retried in a fresh session. */
+export const retryPreamble = (why) => `This stage is being retried in a fresh session (${why}). Earlier partial work may exist in the project; check its current state before changing anything.`;
 
 /** Sent (resuming the same session) when a result did not match its contract. */
 export const repairPrompt = (error) => `Your result did not match the required output schema (${error}). Return the complete structured result now, following the schema exactly.`;

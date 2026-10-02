@@ -75,6 +75,8 @@ export function createClaudeBackend({
       let final = null, stderr = '', cancelled = false, cancelReason = null, exited = false, killTimer = null;
       let settle;
       const done = new Promise((resolve) => { settle = resolve; });
+      // Resolve only after the raw stream log is flushed, so the run record is complete when callers read it.
+      const finish = (value) => (raw ? raw.end(() => settle(value)) : settle(value));
 
       const killGroup = (signal) => {
         try { process.kill(-child.pid, signal); } catch { try { child.kill(signal); } catch { /* already gone */ } }
@@ -93,8 +95,7 @@ export function createClaudeBackend({
       child.on('error', (err) => {
         exited = true;
         clearTimeout(timer);
-        raw?.end();
-        settle({ ok: false, reason: `could not launch claude (${err.code ?? err.message})`, exitCode: null });
+        finish({ ok: false, reason: `could not launch claude (${err.code ?? err.message})`, exitCode: null });
       });
       if (child.pid) live.set(child.pid, child);
 
@@ -117,16 +118,15 @@ export function createClaudeBackend({
         clearTimeout(timer);
         clearTimeout(killTimer);
         live.delete(child.pid);
-        raw?.end();
         const common = { exitCode: code, costUsd: final?.total_cost_usd ?? null, backendSessionId: final?.session_id ?? resume ?? backendSessionId };
-        if (cancelled && cancelReason === 'timed out') return settle({ ok: false, reason: `timed out after ${Math.round(timeoutMs / 60000)} min`, ...common });
-        if (cancelled) return settle({ ok: false, cancelled: true, reason: cancelReason, ...common });
+        if (cancelled && cancelReason === 'timed out') return finish({ ok: false, reason: `timed out after ${Math.round(timeoutMs / 60000)} min`, ...common });
+        if (cancelled) return finish({ ok: false, cancelled: true, reason: cancelReason, ...common });
         if (code === 0 && final && final.subtype === 'success' && !final.is_error) {
           let structured = final.structured_output;
           if (structured === undefined) { try { structured = JSON.parse(final.result); } catch { structured = null; } }
-          return settle({ ok: true, structured, permissionDenials: final.permission_denials ?? [], ...common });
+          return finish({ ok: true, structured, permissionDenials: final.permission_denials ?? [], ...common });
         }
-        return settle({ ok: false, reason: describeFailure(final, code, signal, stderr), ...common });
+        return finish({ ok: false, reason: describeFailure(final, code, signal, stderr), ...common });
       });
 
       child.stdin.on('error', () => { /* the process died before reading its prompt; 'close' reports why */ });

@@ -372,3 +372,122 @@ test('reportProgress: the working agent updates its action text only', () => {
   assert.equal(events.at(-1).payload.agent.action, 'reading README.md');
   assert.deepEqual([wf.getAgent('operations').status, t.stage], ['working', 'planning'], 'status and stage unchanged');
 });
+
+// ---- Phase 6: cancellation, human intervention, interruption, restore ----
+
+test('cancelTask: an explicit cancelled terminal state from any open stage, distinct from failed', () => {
+  const { wf, events } = setup();
+  const id = toTesting(wf);
+  const t = wf.cancelTask(id, { reason: 'User changed their mind' });
+  assert.deepEqual([t.stage, t.status, t.owner, t.assignee, t.failure], ['cancelled', 'cancelled', null, null, null]);
+  assert.deepEqual([t.cancellation.reason, t.cancellation.stage], ['User changed their mind', 'testing']);
+  assert.deepEqual(events.slice(-3).map((e) => e.type), ['stage_changed', 'agent_idle', 'task_cancelled']);
+  assert.ok(wf.listAgents().every((a) => a.status === 'idle'));
+  rejects(() => wf.cancelTask(id), 'task_closed');
+  rejects(() => wf.startWork(id), 'task_closed');
+});
+
+test('block → respond → resume: the task pauses as blocked, keeps its stage, and continues from it', () => {
+  const { wf, since, events } = setup();
+  const { id } = wf.createTask(TASK);
+  advance(wf, id);
+  wf.startWork(id);
+  let n = events.length;
+  const b = wf.block(id, { reason: 'Which OAuth provider?', question: 'Use the existing provider or add a new one?', suggestedActions: ['use existing', 'add Google'] });
+  assert.deepEqual(since(n), ['agent_blocked']);
+  assert.deepEqual([b.stage, b.status, b.pause.kind, b.pause.role, b.pause.question], ['research', 'blocked', 'blocked', 'research', 'Use the existing provider or add a new one?']);
+  assert.deepEqual(events.at(-1).payload.pause.suggestedActions, ['use existing', 'add Google']);
+  rejects(() => wf.completeStage(id), 'agent_not_working');
+  rejects(() => wf.respond(id, {}), 'invalid_input');
+  n = events.length;
+  const r = wf.respond(id, { response: 'Use the existing provider' });
+  assert.deepEqual(since(n), ['intervention_responded']);
+  assert.deepEqual([r.status, r.pause.response], ['blocked', 'Use the existing provider'], 'answering does not resume by itself');
+  n = events.length;
+  const back = wf.resume(id, { mode: 'resume' });
+  assert.deepEqual(since(n), ['task_resumed']);
+  assert.deepEqual([back.status, back.pause, back.stage], ['in_progress', null, 'research']);
+  assert.deepEqual(back.pauses.map((p) => [p.kind, p.outcome, p.mode, p.response]), [['blocked', 'resumed', 'resume', 'Use the existing provider']]);
+  wf.startWork(id);
+  assert.equal(wf.completeStage(id).stage, 'development', 'continues forward from the paused stage');
+});
+
+test('respond only applies to a blocked task; resume only to a paused one', () => {
+  const { wf } = setup();
+  const { id } = wf.createTask(TASK);
+  rejects(() => wf.respond(id, { response: 'x' }), 'not_blocked');
+  rejects(() => wf.resume(id), 'not_paused');
+});
+
+test('interrupt: the holding agent shows interrupted; nothing continues until an explicit resume', () => {
+  const { wf, since, events } = setup();
+  const { id } = wf.createTask(TASK);
+  advance(wf, id);
+  wf.startWork(id, { action: 'reading' });
+  const n = events.length;
+  const t = wf.interrupt(id, { reason: 'ATLAS runtime stopped unexpectedly' });
+  assert.deepEqual(since(n), ['agent_interrupted', 'task_interrupted']);
+  assert.deepEqual([t.status, t.stage, t.pause.kind, t.assignee], ['interrupted', 'research', 'interrupted', 'research']);
+  assert.deepEqual([wf.getAgent('research').status, wf.getAgent('research').error.message], ['interrupted', 'ATLAS runtime stopped unexpectedly']);
+  rejects(() => wf.interrupt(id, { reason: 'again' }), 'already_paused');
+  rejects(() => wf.completeStage(id), 'agent_not_working');
+  wf.resume(id, { mode: 'retry', note: 'retrying after crash' });
+  wf.startWork(id);
+  assert.equal(wf.getAgent('research').status, 'working');
+  assert.deepEqual(wf.getTask(id).pauses.map((p) => [p.kind, p.mode, p.note]), [['interrupted', 'retry', 'retrying after crash']]);
+});
+
+test('an interrupted task that was queued is never picked up automatically — only after resume', () => {
+  const { wf } = setup();
+  const { id: a } = wf.createTask(TASK); // operations holds a
+  const { id: b } = wf.createTask({ title: 'second' }); // b waits for operations
+  wf.interrupt(b, { reason: 'ATLAS stopped' });
+  assert.deepEqual([wf.getTask(b).status, wf.getTask(b).assignee], ['interrupted', null]);
+  advance(wf, a); // operations frees up…
+  assert.equal(wf.getAgent('operations').status, 'idle', '…but does not take the interrupted task');
+  wf.resume(b);
+  assert.deepEqual([wf.getTask(b).status, wf.getTask(b).assignee, wf.getAgent('operations').status], ['in_progress', 'operations', 'assigned']);
+});
+
+test('restore: a snapshot rebuilds tasks, agents, seq, queue order and waiting handoffs', () => {
+  const { wf } = setup();
+  const a = toTesting(wf); // qa working on a
+  const { id: b } = wf.createTask({ title: 'second' });
+  advance(wf, b); advance(wf, b); advance(wf, b); // b waits for QA (handoff not picked up)
+  const { id: c } = wf.createTask({ title: 'third' });
+  wf.startWork(c);
+  wf.block(c, { reason: 'need input' });
+  const snap = JSON.parse(JSON.stringify(wf.snapshot())); // as persisted on disk
+
+  let t = 5000;
+  const wf2 = createWorkflow({ now: () => ++t, restore: snap });
+  assert.deepEqual(wf2.snapshot(), snap, 'identical state after restore');
+  const events = [];
+  wf2.on((e) => events.push(e));
+  wf2.qaPass(a); // QA frees up and takes the waiting task, completing its handoff
+  assert.equal(events[0].seq, snap.seq + 1, 'seq continues across the restart');
+  assert.ok(events.some((e) => e.type === 'handoff_completed' && e.taskId === b), 'the pending handoff survived');
+  assert.equal(wf2.getTask(b).assignee, 'qa');
+  assert.equal(wf2.getTask(c).pause.kind, 'blocked', 'pauses survive');
+  assert.equal(wf2.createTask({ title: 'next' }).id, 'task-4', 'auto ids do not collide with restored tasks');
+});
+
+test('restore: older task records get defaults; inconsistent or invalid snapshots are handled, never guessed', () => {
+  const { wf } = setup();
+  const { id } = wf.createTask(TASK);
+  const snap = JSON.parse(JSON.stringify(wf.snapshot()));
+  delete snap.tasks[0].pause; delete snap.tasks[0].pauses; delete snap.tasks[0].cancellation; // a Phase 5 record
+  const old = createWorkflow({ restore: snap });
+  assert.deepEqual([old.getTask(id).pause, old.getTask(id).pauses, old.getTask(id).cancellation], [null, [], null]);
+
+  const orphan = JSON.parse(JSON.stringify(snap));
+  orphan.agents.find((x) => x.id === 'operations').taskId = 'ghost';
+  const fixed = createWorkflow({ restore: orphan });
+  assert.equal(fixed.getAgent('operations').status, 'idle', 'an agent pointing at a missing task is released');
+  assert.deepEqual([fixed.getTask(id).assignee, fixed.getTask(id).status], [null, 'queued'], 'and its task waits for the role again');
+
+  for (const bad of ['not a snapshot', { seq: -1, tasks: [] }, { seq: 1, tasks: 'x' }, { seq: 1, tasks: [{ id: 'x', title: 't', stage: 'nope', status: 'queued' }] },
+    { seq: 1, tasks: [{ ...snap.tasks[0], owner: 'qa' }] }, { seq: 1, tasks: [], agents: [{ id: 'designer', role: 'designer', status: 'idle' }] }]) {
+    assert.throws(() => createWorkflow({ restore: bad }), (e) => e instanceof WorkflowError && e.code === 'invalid_snapshot', JSON.stringify(bad)?.slice(0, 60));
+  }
+});

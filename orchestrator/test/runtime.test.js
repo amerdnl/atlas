@@ -151,28 +151,31 @@ test('an invalid structured result gets exactly one repair attempt in the same b
   assert.match(bad.rt.getTask(b.taskId).task.failure.reason, /invalid research result \(summary is required\)/);
 });
 
-test('a role reporting "blocked" fails the task with its reason instead of guessing', async () => {
-  const { rt, roles } = rig({ respond: script(['pass'], { research: () => ({ ok: true, structured: { ...R.research, status: 'blocked', summary: 'repository has no tests to follow' } }) }) });
+test('a role reporting "blocked" pauses the task for a person — nothing fails and nothing keeps running', async () => {
+  const { rt, roles, events } = rig({ respond: script(['pass'], { research: () => ({ ok: true, structured: { ...R.research, status: 'blocked', summary: 'repository has no tests to follow', question: 'Which test runner should be used?', suggestedActions: ['node --test', 'vitest'] } }) }) });
   const { taskId } = await submit(rt);
   await rt.whenDone(taskId);
   assert.deepEqual(roles(), ['operations/planning', 'research/research']);
-  assert.match(rt.getTask(taskId).task.failure.reason, /Research is blocked: repository has no tests to follow/);
+  const d = rt.getTask(taskId);
+  assert.deepEqual([d.task.stage, d.task.status, d.active], ['research', 'blocked', false]);
+  assert.deepEqual([d.task.pause.question, d.task.pause.suggestedActions, d.task.failure], ['Which test runner should be used?', ['node --test', 'vitest'], null]);
+  assert.ok(events.some((e) => e.type === 'agent_blocked'));
+  assert.ok(!events.some((e) => e.type === 'task_failed'));
 });
 
-test('cancellation terminates the running session, fails the task, and is idempotent', async () => {
+test('cancellation terminates the running session, records an explicit cancelled state, and is idempotent', async () => {
   const { rt, backend, events } = rig({ respond: script(['pass'], { research: () => 'hang' }) });
   const { taskId } = await submit(rt);
   await waitFor(() => backend.calls.length === 2);
   const first = rt.cancelTask(taskId);
   assert.equal(backend.calls[1].cancelled, true, 'the backend process was told to stop');
-  assert.equal(first.task.stage, 'failed');
-  assert.match(first.task.failure.reason, /Cancelled by user/);
+  assert.deepEqual([first.task.stage, first.task.status, first.task.cancellation.reason, first.task.failure], ['cancelled', 'cancelled', 'Cancelled by user', null]);
   await rt.whenDone(taskId);
   const again = rt.cancelTask(taskId);
-  assert.equal(again.task.stage, 'failed');
+  assert.equal(again.task.stage, 'cancelled');
   assert.deepEqual(rt.getTask(taskId).sessions.map((s) => s.status), ['completed', 'cancelled']);
   assert.equal(backend.calls.length, 2, 'nothing runs after cancellation');
-  assert.equal(events.filter((e) => e.type === 'task_failed').length, 1);
+  assert.deepEqual(events.filter((e) => /^task_(failed|cancelled)$/.test(e.type)).map((e) => e.type), ['task_cancelled']);
   assert.throws(() => rt.cancelTask('nope'), (e) => e instanceof RuntimeError && e.code === 'unknown_task');
 });
 
@@ -239,12 +242,14 @@ test('managed sessions are identifiable by backend session id; other Claude acti
   assert.deepEqual(classifySessions(active, managed).map((r) => [r.managed, r.role]), [[true, 'developer'], [false, null]]);
 });
 
-test('shutdown cancels running sessions and fails their tasks', async () => {
+test('normal shutdown stops sessions and pauses their tasks as interrupted — not cancelled, not failed', async () => {
   const { rt, backend } = rig({ respond: script(['pass'], { research: () => 'hang' }) });
   const { taskId } = await submit(rt);
   await waitFor(() => backend.calls.length === 2);
-  await rt.shutdown('ATLAS stopped');
+  await rt.shutdown('ATLAS stopped (normal shutdown)');
   assert.equal(backend.calls[1].cancelled, true);
-  assert.match(rt.getTask(taskId).task.failure.reason, /ATLAS stopped/);
+  const d = rt.getTask(taskId);
+  assert.deepEqual([d.task.stage, d.task.status, d.task.pause.kind, d.task.pause.reason], ['research', 'interrupted', 'interrupted', 'ATLAS stopped (normal shutdown)']);
+  assert.deepEqual(d.sessions.map((s) => s.status), ['completed', 'interrupted']);
   await assert.rejects(submit(rt), (e) => e.code === 'stopped');
 });

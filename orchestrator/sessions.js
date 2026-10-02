@@ -6,24 +6,27 @@
  * a role means in the SDLC. The runtime translates between them; the workflow engine never sees a
  * process, and a session never decides a workflow transition on its own.
  *
- *   queued → starting → running ⇄ waiting → completed | failed | cancelled
+ *   queued → starting → running ⇄ waiting → completed | failed | cancelled | interrupted
+ *
+ * `interrupted` means the runtime stopped (shutdown or crash) before the session finished.
  *
  * `waiting` is reserved for backends that can pause (e.g. awaiting input); the Claude print-mode
  * adapter never enters it.
  */
-export const SESSION_STATUSES = Object.freeze(['queued', 'starting', 'running', 'waiting', 'completed', 'failed', 'cancelled']);
+export const SESSION_STATUSES = Object.freeze(['queued', 'starting', 'running', 'waiting', 'completed', 'failed', 'cancelled', 'interrupted']);
 
 const NEXT = {
-  queued: ['starting', 'failed', 'cancelled'],
-  starting: ['running', 'failed', 'cancelled'],
-  running: ['waiting', 'completed', 'failed', 'cancelled'],
-  waiting: ['running', 'completed', 'failed', 'cancelled'],
+  queued: ['starting', 'failed', 'cancelled', 'interrupted'],
+  starting: ['running', 'failed', 'cancelled', 'interrupted'],
+  running: ['waiting', 'completed', 'failed', 'cancelled', 'interrupted'],
+  waiting: ['running', 'completed', 'failed', 'cancelled', 'interrupted'],
   completed: [],
   failed: [],
   cancelled: [],
+  interrupted: [],
 };
 
-export const isFinished = (s) => s.status === 'completed' || s.status === 'failed' || s.status === 'cancelled';
+export const isFinished = (s) => ['completed', 'failed', 'cancelled', 'interrupted'].includes(s.status);
 
 export function createSession({ id, taskId, role, stage, backend, cwd, handoffId = null, attempt = 1, at }) {
   return {
@@ -38,7 +41,7 @@ export function advanceSession(session, to, at, patch = {}) {
   if (!NEXT[session.status]?.includes(to)) throw new Error(`session ${session.id}: ${session.status} → ${to} is not allowed`);
   const next = { ...session, ...patch, status: to, updatedAt: at };
   if (to === 'starting') next.startedAt = at;
-  if (to === 'completed' || to === 'failed' || to === 'cancelled') next.completedAt = at;
+  if (isFinished(next)) next.completedAt = at;
   return next;
 }
 

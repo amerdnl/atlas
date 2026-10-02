@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createWorkflow } from '../../workflow/engine.js';
 import { ROLES, ROLE_IDS } from '../../workflow/roles.js';
+import { AGENT_STATUSES } from '../../workflow/agents.js';
 import { createWorkflowVisuals, createSample, STATUS_VISUALS, TIMING } from '../src/workflow-visuals.js';
 import { createDemoDriver, demoSchedule } from '../src/workflow-demo.js';
 import { ATLAS_AREAS } from '../src/atlas-areas.js';
@@ -31,14 +32,16 @@ test('every role maps to one district in every composition, using the canonical 
 
 test('status targets: idle fully off, rising through assigned to working; waiting softer; blocked warns', () => {
   const S = STATUS_VISUALS;
-  assert.deepEqual(Object.keys(S), ['idle', 'assigned', 'working', 'waiting', 'blocked'], 'exactly the Phase 3 agent statuses');
+  assert.deepEqual(Object.keys(S), [...AGENT_STATUSES], 'exactly the workflow agent statuses');
+  assert.ok(S.interrupted.level > 0 && S.interrupted.level < S.assigned.level, 'interrupted: dimly identifiable, below active work');
+  assert.deepEqual([S.interrupted.flow, S.interrupted.wait, S.interrupted.warn], [0, 1, 0], 'a slow pulse, not work and not a warning');
   assert.deepEqual({ ...S.idle }, { level: 0, flow: 0, wait: 0, warn: 0 }, 'idle: role light fully off');
   assert.ok(S.idle.level < S.assigned.level && S.assigned.level < S.working.level);
   assert.ok(S.waiting.level > S.assigned.level && S.waiting.level < S.working.level);
   assert.ok(S.blocked.level > S.idle.level && S.blocked.level < S.working.level);
   for (const [status, v] of Object.entries(S)) {
     assert.equal(v.flow, status === 'working' ? 1 : 0, `${status} flow`);
-    assert.equal(v.wait, status === 'waiting' ? 1 : 0, `${status} wait pulse`);
+    assert.equal(v.wait, status === 'waiting' || status === 'interrupted' ? 1 : 0, `${status} wait pulse`);
     assert.equal(v.warn, status === 'blocked' ? 1 : 0, `${status} warning`);
   }
   assert.ok(TIMING.riseMs >= 500 && TIMING.riseMs <= 800, 'turn-on 500–800 ms');
@@ -254,4 +257,36 @@ test('demo: every display computes the identical frame, however late it loaded (
     dB.update(at);
     assert.deepEqual(vB.sample(at), vA.sample(at), `frames differ at +${at - loop}ms`);
   }
+});
+
+test('after a runtime restart: interrupted and blocked tasks render paused, nothing stale replays, cancelled clears', () => {
+  // A restarted runtime's sync: only its own (recovery) events, then the restored snapshot.
+  let clock = T0;
+  const wf = createWorkflow({ now: () => clock });
+  const a = wf.createTask({ title: 'a' }).id;
+  wf.startWork(a); wf.completeStage(a); wf.startWork(a); // research working; its handoff long finished
+  const b = wf.createTask({ title: 'b' }).id;
+  wf.startWork(b); wf.block(b, { reason: 'which provider?' }); // operations blocked
+  const restored = createWorkflow({ now: () => clock, restore: JSON.parse(JSON.stringify(wf.snapshot())) });
+  const recovery = [];
+  restored.on((e) => recovery.push(e));
+  clock = T0 + 60_000;
+  restored.interrupt(a, { reason: 'ATLAS runtime stopped unexpectedly' });
+  const v = createWorkflowVisuals();
+  for (const e of recovery) v.apply(e);
+  v.seed(restored.snapshot());
+  const s = v.sample(clock + 5000);
+  assert.deepEqual([s.roles.research.status, s.roles.research.text, s.roles.research.warn, s.roles.research.flow], ['interrupted', 'interrupted', 0, 0]);
+  assert.ok(close(s.roles.research.level, STATUS_VISUALS.interrupted.level), 'dim, not active');
+  assert.equal(s.roles.research.label, 1, 'its label stays up until someone decides');
+  assert.deepEqual([s.roles.operations.status, s.roles.operations.warn, s.roles.operations.text], ['blocked', 1, 'blocked']);
+  assert.equal(s.pathCount, 0, 'no handoff replays after a restart');
+  assert.equal(s.busy, false, 'paused states never need the full frame rate');
+  for (const id of ['developer', 'qa']) assert.equal(s.roles[id].level, 0, `${id} stays off`);
+  // Cancelling the interrupted task clears its district.
+  restored.on(v.apply); // live events after the sync
+  clock = T0 + 120_000;
+  restored.cancelTask(a, { reason: 'not needed' });
+  const end = v.sample(clock + 5000);
+  assert.deepEqual([end.roles.research.level, end.roles.research.label], [0, 0], 'cancelled: nothing left lit');
 });

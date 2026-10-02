@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { contractFor, schemaFor, normalizeResult } from '../contracts.js';
-import { createArtifact, applyResult, routeArtifact, artifactView } from '../artifact.js';
-import { ROLE_POLICY, systemPrompt, stagePrompt, repairPrompt } from '../prompts.js';
+import { createArtifact, applyResult, routeArtifact, artifactView, recordIntervention } from '../artifact.js';
+import { ROLE_POLICY, systemPrompt, stagePrompt, repairPrompt, continuePrompt, retryPreamble } from '../prompts.js';
 import { SESSION_STATUSES, createSession, advanceSession, isFinished, classifySessions } from '../sessions.js';
 import { ROLE_IDS } from '../../workflow/roles.js';
 import { STAGES, ownerOf, isTerminal } from '../../workflow/stages.js';
@@ -24,7 +24,10 @@ test('every active stage has a result contract with a strict JSON Schema', () =>
 test('normalizeResult: valid results pass, trimmed and bounded; optional lists default to []', () => {
   const r = normalizeResult('research', { status: 'complete', summary: '  found it ', findings: ['a', ' b ', '', 3], relevantFiles: ['src/math.js'] });
   assert.equal(r.ok, true);
-  assert.deepEqual(r.value, { status: 'complete', summary: 'found it', findings: ['a', 'b'], relevantFiles: ['src/math.js'], decisions: [], risks: [] });
+  assert.deepEqual(r.value, { status: 'complete', summary: 'found it', findings: ['a', 'b'], relevantFiles: ['src/math.js'], decisions: [], risks: [], question: '', suggestedActions: [] });
+  const blocked = normalizeResult('research', { status: 'blocked', summary: 'no provider named', findings: [], relevantFiles: [], question: 'Which OAuth provider?', suggestedActions: ['use Google', 'use GitHub'] });
+  assert.deepEqual([blocked.ok, blocked.value.question, blocked.value.suggestedActions], [true, 'Which OAuth provider?', ['use Google', 'use GitHub']]);
+  assert.ok(schemaFor('qa').properties.question && schemaFor('plan').properties.suggestedActions, 'every contract can carry a question');
   const long = normalizeResult('develop', { status: 'complete', summary: 'x'.repeat(5000), changedFiles: Array(99).fill('f'), testsRun: [] });
   assert.ok(long.value.summary.length <= 2000 && long.value.changedFiles.length === 40);
 });
@@ -132,7 +135,9 @@ test('tool policy: Operations/Research read-only, QA cannot edit, Developer edit
 // ---- sessions ----
 
 test('managed session lifecycle: valid transitions only, timestamps recorded', () => {
-  assert.deepEqual(SESSION_STATUSES, ['queued', 'starting', 'running', 'waiting', 'completed', 'failed', 'cancelled']);
+  assert.deepEqual(SESSION_STATUSES, ['queued', 'starting', 'running', 'waiting', 'completed', 'failed', 'cancelled', 'interrupted']);
+  const lost = advanceSession(advanceSession(createSession({ id: 's9', at: 0 }), 'starting', 1), 'interrupted', 5, { failure: 'runtime stopped' });
+  assert.deepEqual([lost.status, lost.completedAt, isFinished(lost)], ['interrupted', 5, true]);
   let s = createSession({ id: 's1', taskId: 't', role: 'qa', stage: 'testing', backend: 'fake', cwd: '/x', at: 1 });
   assert.equal(s.status, 'queued');
   s = advanceSession(s, 'starting', 2, { backendSessionId: 'uuid' });
@@ -154,4 +159,27 @@ test('unmanaged Claude sessions are never given a role; managed ones match by ex
   ];
   const rows = classifySessions(active, managed);
   assert.deepEqual(rows.map((r) => [r.session, r.managed, r.role]), [['aaaa-1111', true, 'developer'], ['bbbb-2222', false, null], ['cccc-3333', false, null]]);
+});
+
+test('interventions: an answered question reaches every later role; prompts ask for a question when blocked', () => {
+  let a = createArtifact({ taskId: 't', goal: 'Use the agreed greeting' });
+  const pause = { kind: 'blocked', role: 'operations', stage: 'planning', reason: 'phrase unknown', question: 'Which phrase was agreed?', suggestedActions: ['ask the team'], response: 'Welcome to ATLAS', at: 1, respondedAt: 2 };
+  a = recordIntervention(a, pause);
+  for (const stage of ['research', 'development', 'testing', 'finalizing']) {
+    assert.deepEqual(artifactView(a, stage).humanGuidance, [{ role: 'operations', stage: 'planning', question: 'Which phrase was agreed?', answer: 'Welcome to ATLAS' }], stage);
+  }
+  assert.equal(artifactView(recordIntervention(createArtifact({ taskId: 't', goal: 'g' }), { ...pause, response: null }), 'research').humanGuidance, undefined, 'unanswered questions are not guidance');
+  const task = { id: 't', title: 'x', description: 'x', attempt: 1 };
+  assert.match(stagePrompt({ role: 'research', stage: 'research', task, artifact: a, project: { cwd: '/p' } }), /status "blocked" with a summary, a precise question/);
+  assert.match(stagePrompt({ role: 'research', stage: 'research', task, artifact: a, project: { cwd: '/p' }, preamble: retryPreamble('interrupted') }), /^This stage is being retried/);
+});
+
+test('continuation prompts: after a human answer, and after an interruption', () => {
+  const blocked = continuePrompt({ kind: 'blocked', stage: 'planning', pause: { question: 'Which phrase?', response: 'Welcome to ATLAS' } });
+  assert.match(blocked, /Which phrase\?/);
+  assert.match(blocked, /Their answer: Welcome to ATLAS/);
+  const interrupted = continuePrompt({ kind: 'interrupted', stage: 'development', pause: { reason: 'ATLAS runtime stopped unexpectedly' }, note: 'carry on' });
+  assert.match(interrupted, /stopped while you were working on the development stage \(ATLAS runtime stopped unexpectedly\)/);
+  assert.match(interrupted, /Check the current state of the project/);
+  assert.match(interrupted, /Note from the person: carry on/);
 });

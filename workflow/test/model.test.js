@@ -22,11 +22,11 @@ test('role registry: exactly the four v1 roles, in workflow order, with stable i
 test('stage ownership follows the SDLC; terminal stages have no active owner', () => {
   assert.deepEqual(STAGE_OWNER, {
     planning: 'operations', research: 'research', development: 'developer', testing: 'qa',
-    rework: 'developer', finalizing: 'operations', completed: null, failed: null,
+    rework: 'developer', finalizing: 'operations', completed: null, failed: null, cancelled: null,
   });
   for (const s of STAGES) assert.ok(ownerOf(s) === null || isRole(ownerOf(s)), `${s} owner must be a role`);
-  assert.equal(isTerminal('completed') && isTerminal('failed'), true);
-  assert.equal(STAGES.filter(isTerminal).length, 2);
+  assert.equal(isTerminal('completed') && isTerminal('failed') && isTerminal('cancelled'), true);
+  assert.equal(STAGES.filter(isTerminal).length, 3);
 });
 
 test('valid transitions: the normal path, the QA loop, and failing from any open stage', () => {
@@ -34,7 +34,10 @@ test('valid transitions: the normal path, the QA loop, and failing from any open
   for (let i = 0; i < normal.length - 1; i++) assert.ok(canTransition(normal[i], normal[i + 1]), `${normal[i]} → ${normal[i + 1]}`);
   assert.ok(canTransition('testing', 'rework'));
   assert.ok(canTransition('rework', 'testing'));
-  for (const s of STAGES.filter((x) => !isTerminal(x))) assert.ok(canTransition(s, 'failed'), `${s} → failed`);
+  for (const s of STAGES.filter((x) => !isTerminal(x))) {
+    assert.ok(canTransition(s, 'failed'), `${s} → failed`);
+    assert.ok(canTransition(s, 'cancelled'), `${s} → cancelled`);
+  }
 });
 
 test('invalid transitions are rejected', () => {
@@ -43,11 +46,13 @@ test('invalid transitions are rejected', () => {
     ['research', 'testing'], ['development', 'rework'], ['development', 'completed'], ['testing', 'development'],
     ['testing', 'completed'], ['rework', 'development'], ['rework', 'finalizing'], ['finalizing', 'testing'],
     ['completed', 'development'], ['completed', 'planning'], ['completed', 'failed'], ['failed', 'planning'],
+    ['cancelled', 'planning'], ['completed', 'cancelled'], ['failed', 'cancelled'],
     ['testing', 'testing'], ['planning', 'nope'], ['nope', 'research'],
   ];
   for (const [from, to] of bad) assert.equal(canTransition(from, to), false, `${from} → ${to} must be rejected`);
   assert.deepEqual(allowedNext('completed'), []);
   assert.deepEqual(allowedNext('failed'), []);
+  assert.deepEqual(allowedNext('cancelled'), []);
 });
 
 test('the transition table only references known stages; forward steps are allowed transitions', () => {
@@ -61,11 +66,12 @@ test('the transition table only references known stages; forward steps are allow
 });
 
 test('agent statuses and the changes allowed between them', () => {
-  assert.deepEqual(AGENT_STATUSES, ['idle', 'assigned', 'working', 'waiting', 'blocked']);
-  for (const [from, to] of [['idle', 'assigned'], ['assigned', 'working'], ['working', 'waiting'], ['working', 'blocked'], ['waiting', 'working'], ['blocked', 'working'], ['working', 'idle']]) {
+  assert.deepEqual(AGENT_STATUSES, ['idle', 'assigned', 'working', 'waiting', 'blocked', 'interrupted']);
+  for (const [from, to] of [['idle', 'assigned'], ['assigned', 'working'], ['working', 'waiting'], ['working', 'blocked'], ['waiting', 'working'], ['blocked', 'working'], ['working', 'idle'],
+    ['working', 'interrupted'], ['assigned', 'interrupted'], ['interrupted', 'working'], ['interrupted', 'idle']]) {
     assert.ok(canChangeStatus(from, to), `${from} → ${to}`);
   }
-  for (const [from, to] of [['idle', 'working'], ['assigned', 'waiting'], ['idle', 'blocked'], ['working', 'assigned'], ['blocked', 'waiting']]) {
+  for (const [from, to] of [['idle', 'working'], ['assigned', 'waiting'], ['idle', 'blocked'], ['working', 'assigned'], ['blocked', 'waiting'], ['idle', 'interrupted'], ['blocked', 'interrupted'], ['interrupted', 'blocked']]) {
     assert.equal(canChangeStatus(from, to), false, `${from} → ${to}`);
   }
   assert.deepEqual(createAgent('qa', 5), { id: 'qa', role: 'qa', status: 'idle', taskId: null, action: null, error: null, since: 5, updatedAt: 5 });

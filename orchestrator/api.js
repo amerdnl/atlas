@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { RuntimeError } from './runtime.js';
 import { PreflightError } from './project.js';
 import { classifySessions } from './sessions.js';
+import { WorkflowError } from '../workflow/engine.js';
 
 const MAX_BODY = 64 * 1024;
 
@@ -24,7 +25,7 @@ function readBody(req) {
   });
 }
 
-const STATUS = { invalid_input: 400, too_large: 413, unknown_task: 404, busy_project: 409, stopped: 503 };
+const STATUS = { invalid_input: 400, too_large: 413, unknown_task: 404, busy_project: 409, not_resumable: 409, task_closed: 409, task_unreadable: 409, running: 409, stopped: 503 };
 
 /**
  * Local HTTP API for the ATLAS runtime, mounted into the collector's server under /api/.
@@ -66,31 +67,39 @@ export function createApi({ runtime, token, port, getActivity = () => [] }) {
         req.on('close', () => { off(); streams.delete(res); });
         return;
       }
+      // Everything else — task details and history can contain source code — needs the token too.
+      if (req.headers.origin) return json(res, 403, { error: 'browser requests are limited to the workflow stream' });
+      if (!authorized(req)) return json(res, 401, { error: 'missing or invalid token (see runtime.json)' });
       if (req.method === 'GET' && p === '/api/tasks') return json(res, 200, runtime.listTasks());
+      if (req.method === 'GET' && p === '/api/history') return json(res, 200, runtime.history({ limit: Number(url.searchParams.get('limit')) || 20 }));
+      if (req.method === 'GET' && p === '/api/runtime') return json(res, 200, { recovery: runtime.recovery });
       if (req.method === 'GET' && p === '/api/activity') {
         const rows = classifySessions(getActivity(), runtime.managedSessions());
         return json(res, 200, { managed: rows.filter((r) => r.managed), unmanaged: rows.filter((r) => !r.managed) });
       }
-      const m = p.match(/^\/api\/tasks\/([\w.-]+)(\/cancel)?$/);
+      const m = p.match(/^\/api\/tasks\/([\w.-]+)(?:\/(cancel|respond|resume|fail))?$/);
       if (req.method === 'GET' && m && !m[2]) return json(res, 200, runtime.getTask(m[1]));
-
-      if (req.method === 'POST' && (p === '/api/tasks' || (m && m[2]))) {
-        if (req.headers.origin) return json(res, 403, { error: 'browser requests cannot start or stop tasks' });
-        if (!authorized(req)) return json(res, 401, { error: 'missing or invalid token (see runtime.json)' });
-        if (p === '/api/tasks') {
-          const body = await readBody(req);
-          const out = await runtime.submitTask({
-            request: body.request, cwd: body.cwd, acceptanceCriteria: body.acceptanceCriteria ?? [],
-            allowDirty: body.allowDirty === true, allowSelf: body.allowSelf === true,
-          });
-          return json(res, 201, out);
-        }
-        return json(res, 200, runtime.cancelTask(m[1], 'Cancelled by user'));
+      if (req.method === 'POST' && p === '/api/tasks') {
+        const body = await readBody(req);
+        const out = await runtime.submitTask({
+          request: body.request, cwd: body.cwd, acceptanceCriteria: body.acceptanceCriteria ?? [],
+          allowDirty: body.allowDirty === true, allowSelf: body.allowSelf === true, requestId: body.requestId ?? null,
+        });
+        return json(res, out.duplicate ? 200 : 201, out);
+      }
+      if (req.method === 'POST' && m && m[2]) {
+        const body = await readBody(req);
+        const requestId = body.requestId ?? null; // optional idempotency id: a repeat returns the task without acting again
+        if (m[2] === 'cancel') return json(res, 200, runtime.cancelTask(m[1], body.reason || 'Cancelled by user', { requestId }));
+        if (m[2] === 'respond') return json(res, 200, runtime.respond(m[1], body.response, { requestId }));
+        if (m[2] === 'resume') return json(res, 200, runtime.resumeTask(m[1], { mode: body.mode ?? 'resume', note: body.note ?? null, requestId }));
+        return json(res, 200, runtime.abandonTask(m[1], body.reason, { requestId }));
       }
       return json(res, 404, { error: 'not found' });
     } catch (e) {
       if (e instanceof PreflightError) return json(res, 422, { error: e.message, code: e.code });
       if (e instanceof RuntimeError) return json(res, STATUS[e.code] ?? 400, { error: e.message, code: e.code });
+      if (e instanceof WorkflowError) return json(res, e.code === 'invalid_input' ? 400 : 409, { error: e.message, code: e.code });
       return json(res, 500, { error: e.message });
     }
   }

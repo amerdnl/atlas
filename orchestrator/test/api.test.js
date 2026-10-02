@@ -59,7 +59,8 @@ test('reads work locally, with no CORS headers; a foreign Host (DNS rebinding) i
   assert.deepEqual(Object.keys(ok.body), ['snapshot', 'events']);
   assert.equal((await req(port, 'GET', '/api/workflow', { headers: { host: 'localhost:' + port } })).status, 200);
   assert.equal((await req(port, 'GET', '/api/workflow', { headers: { host: `evil.example:${port}` } })).status, 403);
-  assert.equal((await req(port, 'GET', '/api/nope')).status, 404);
+  assert.equal((await req(port, 'GET', '/api/nope')).status, 401, 'unknown paths reveal nothing without the token');
+  assert.equal((await req(port, 'GET', '/api/nope', { headers: auth })).status, 404);
 }));
 
 test('starting or cancelling work needs the token and must not come from a browser', () => withApi(async ({ port, backend }) => {
@@ -80,7 +81,7 @@ test('errors map to clear status codes', () => withApi(async ({ port }) => {
   assert.deepEqual([dirty.status, dirty.body.code], [422, 'dirty']);
   assert.equal((await req(port, 'POST', '/api/tasks', { headers: auth, body: task })).status, 201);
   assert.equal((await req(port, 'POST', '/api/tasks', { headers: auth, body: task })).status, 409, 'one task per project');
-  assert.equal((await req(port, 'GET', '/api/tasks/t-missing')).status, 404);
+  assert.equal((await req(port, 'GET', '/api/tasks/t-missing', { headers: auth })).status, 404);
 }));
 
 test('the event stream starts with a sync, then streams live events in order; cancel works over HTTP', () => withApi(async ({ port, backend }) => {
@@ -101,8 +102,8 @@ test('the event stream starts with a sync, then streams live events in order; ca
   while (backend.calls.length < 2) await new Promise((r) => setTimeout(r, 5));
   const cancelled = await req(port, 'POST', `/api/tasks/${taskId}/cancel`, { headers: auth });
   assert.equal(cancelled.status, 200);
-  assert.equal(cancelled.body.task.stage, 'failed');
-  while (!blocks.some((b) => b.includes('task_failed'))) await new Promise((r) => setTimeout(r, 5));
+  assert.equal(cancelled.body.task.stage, 'cancelled');
+  while (!blocks.some((b) => b.includes('task_cancelled'))) await new Promise((r) => setTimeout(r, 5));
   for (const b of blocks.slice(1)) if (b.startsWith('data: ')) got.push(JSON.parse(b.slice(6)));
   const seqs = [...sync.events, ...got].map((e) => e.seq);
   assert.deepEqual(seqs, [...seqs].sort((a, b) => a - b), 'ordered');
@@ -111,6 +112,29 @@ test('the event stream starts with a sync, then streams live events in order; ca
 }));
 
 test('/api/activity splits Claude activity into managed (with role) and unmanaged (no role)', () => withApi(async ({ port }) => {
-  const a = await req(port, 'GET', '/api/activity');
+  const a = await req(port, 'GET', '/api/activity', { headers: auth });
   assert.deepEqual(a.body, { managed: [], unmanaged: [{ key: '-x', session: 'external', managed: false, role: null, taskId: null, sessionId: null }] });
 }));
+
+test('task details and history need the token; the city stream does not', () => withApi(async ({ port }) => {
+  for (const p of ['/api/tasks', '/api/history', '/api/runtime', '/api/tasks/t-x']) assert.equal((await req(port, 'GET', p)).status, 401, p);
+  assert.equal((await req(port, 'GET', '/api/history', { headers: { ...auth, origin: 'https://evil.example' } })).status, 403);
+  const h = await req(port, 'GET', '/api/history?limit=5', { headers: auth });
+  assert.deepEqual([h.status, Array.isArray(h.body)], [200, true]);
+}));
+
+test('intervention over HTTP: respond, resume, fail; duplicate requestId returns the same task', () => withApi(async ({ port, runtime }) => {
+  const body = { ...task, requestId: 'req-api-00000001' };
+  const first = await req(port, 'POST', '/api/tasks', { headers: auth, body });
+  const again = await req(port, 'POST', '/api/tasks', { headers: auth, body });
+  assert.deepEqual([first.status, again.status, again.body.taskId, again.body.duplicate], [201, 200, first.body.taskId, true]);
+  const id = first.body.taskId;
+  await runtime.whenDone(id);
+  assert.equal((await req(port, 'GET', `/api/tasks/${id}`, { headers: auth })).body.task.status, 'blocked');
+  assert.equal((await req(port, 'POST', `/api/tasks/${id}/respond`, { headers: auth, body: {} })).status, 400);
+  const r = await req(port, 'POST', `/api/tasks/${id}/respond`, { headers: auth, body: { response: 'Use node --test' } });
+  assert.equal(r.body.task.pause.response, 'Use node --test');
+  const f = await req(port, 'POST', `/api/tasks/${id}/fail`, { headers: auth, body: { reason: 'not needed' } });
+  assert.deepEqual([f.status, f.body.task.stage], [200, 'failed']);
+  assert.equal((await req(port, 'POST', `/api/tasks/${id}/resume`, { headers: auth, body: {} })).status, 409);
+}, { respond: (c) => ({ ok: true, structured: { status: 'blocked', summary: 'which runner?', question: 'Which test runner?' } }) }));

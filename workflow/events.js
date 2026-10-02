@@ -13,12 +13,17 @@ export const EVENT_TYPES = Object.freeze([
   'agent_blocked',
   'agent_idle',
   'agent_progress',
+  'agent_interrupted',
   'handoff_started',
   'handoff_completed',
   'qa_passed',
   'qa_failed',
+  'intervention_responded',
+  'task_interrupted',
+  'task_resumed',
   'task_completed',
   'task_failed',
+  'task_cancelled',
 ]);
 
 /** A minimal synchronous emitter: listeners run in subscription order; a throwing listener can't break the engine. */

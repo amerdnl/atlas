@@ -10,6 +10,7 @@ import { createServer } from './src/server.js';
 import { createRuntime } from '../orchestrator/runtime.js';
 import { createApi } from '../orchestrator/api.js';
 import { createClaudeBackend } from '../orchestrator/backends/claude.js';
+import { acquireLock, releaseLock } from '../orchestrator/lock.js';
 
 const arg = (name) => { const i = process.argv.indexOf(`--${name}`); return i > 1 ? process.argv[i + 1] : undefined; };
 const config = (() => {
@@ -31,17 +32,22 @@ const log = (...a) => console.log('[atlas]', ...a);
 const stateDir = path.resolve(arg('state-dir') ?? config.stateDir ?? path.join(os.homedir(), '.config', 'atlas'));
 const orch = config.orchestration ?? {};
 const backend = createClaudeBackend({
-  bin: orch.claudePath ?? 'claude', model: orch.model ?? null, maxBudgetUsd: orch.maxBudgetUsd ?? 3,
-  timeoutMs: (orch.sessionTimeoutMin ?? 20) * 60_000, log: (m) => log(m),
-});
-const runtime = createRuntime({
-  backend, stateDir, log: (m) => log(m), maxQaAttempts: orch.maxQaAttempts ?? 3,
-  atlasRoot: path.resolve(import.meta.dirname, '..'),
+  bin: orch.claudePath ?? 'claude', model: orch.model ?? null, maxBudgetUsd: orch.sessionBudgetUsd ?? orch.maxBudgetUsd ?? 3,
+  timeoutMs: (orch.sessionTimeoutMinutes ?? orch.sessionTimeoutMin ?? 20) * 60_000, log: (m) => log(m),
 });
 const token = crypto.randomBytes(24).toString('hex');
 const runtimeFile = path.join(stateDir, 'runtime.json');
-const api = createApi({ runtime, token, port, getActivity: () => scanClaudeActivity(claudeRoot, Date.now()).active });
-const { server, broadcast, ping } = createServer({ getStats: () => stats, sceneDir, workflowDir, routes: api.route });
+// Orchestration starts only once this process owns the state directory (see the listen callback).
+let runtime = null, api = null, lock = null;
+let apiUnavailable = 'ATLAS orchestration is starting';
+const routes = (req, res, url) => {
+  if (!url.pathname.startsWith('/api/')) return false;
+  if (api) return api.route(req, res, url);
+  res.writeHead(503, { 'content-type': 'application/json' });
+  res.end(JSON.stringify({ error: apiUnavailable }));
+  return true;
+};
+const { server, broadcast, ping } = createServer({ getStats: () => stats, sceneDir, workflowDir, routes });
 
 function removeRuntimeFile() {
   try { if (JSON.parse(fs.readFileSync(runtimeFile, 'utf8')).pid === process.pid) fs.unlinkSync(runtimeFile); } catch { /* not ours / gone */ }
@@ -50,13 +56,15 @@ let stopping = false;
 async function shutdown(code) {
   if (stopping) return;
   stopping = true;
-  api.close();
-  await runtime.shutdown('ATLAS stopped');
+  api?.close();
+  // Normal shutdown: running tasks are paused as interrupted (never marked cancelled) and saved.
+  await runtime?.shutdown('ATLAS stopped (normal shutdown)');
+  if (lock) releaseLock(stateDir, lock);
   process.exit(code);
 }
 process.on('SIGTERM', () => shutdown(0));
 process.on('SIGINT', () => shutdown(0));
-process.on('exit', () => { backend.killAllSync(); removeRuntimeFile(); });
+process.on('exit', () => { backend.killAllSync(); removeRuntimeFile(); if (lock) releaseLock(stateDir, lock); });
 
 let lastSource = null;
 async function tick() {
@@ -78,10 +86,24 @@ server.on('error', (e) => {
 });
 server.listen(port, '127.0.0.1', () => {
   log(`serving http://127.0.0.1:${port}/ (scene: ${sceneDir})`);
-  // Only the process that owns the port publishes a token (a second instance exits with code 3 above).
-  fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });
-  fs.writeFileSync(runtimeFile, JSON.stringify({ port, token, pid: process.pid }), { mode: 0o600 });
-  log(`orchestration API ready (state: ${stateDir})`);
+  // One authoritative runtime per state directory: the port alone doesn't prove it (another instance
+  // may use a different port), so ownership is a lock with process identity.
+  const got = acquireLock(stateDir, { port });
+  if (!got.ok) {
+    apiUnavailable = `orchestration disabled: ${got.why} — owner pid ${got.owner?.pid ?? '?'} on port ${got.owner?.port ?? '?'}; if it is gone, run \`atlas unlock\``;
+    log(apiUnavailable);
+  } else {
+    lock = got.lock;
+    if (got.takeover) log(`took over a stale runtime lock (${got.takeover.why})`);
+    runtime = createRuntime({
+      backend, stateDir: orch.persistenceEnabled === false ? null : stateDir, log: (m) => log(m), maxQaAttempts: orch.maxQaAttempts ?? 3,
+      atlasRoot: path.resolve(import.meta.dirname, '..'),
+    });
+    api = createApi({ runtime, token, port, getActivity: () => scanClaudeActivity(claudeRoot, Date.now()).active });
+    fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(runtimeFile, JSON.stringify({ port, token, pid: process.pid }), { mode: 0o600 });
+    log(`orchestration API ready (state: ${stateDir})`);
+  }
   tick();
   setInterval(ping, 15_000);
 });

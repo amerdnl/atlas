@@ -6,6 +6,9 @@
 const str = { type: 'string' };
 const list = { type: 'array', items: { type: 'string' } };
 
+// Any contract may carry these, so a "blocked" result tells the person exactly what is needed.
+const blockedInfo = { question: str, suggestedActions: list };
+
 const CONTRACTS = {
   // Operations, planning: turn the request into a precise goal and testable acceptance criteria.
   plan: { statuses: ['complete', 'blocked'], fields: { summary: str, goal: str, acceptanceCriteria: list, notes: list }, required: ['summary', 'goal', 'acceptanceCriteria'] },
@@ -35,7 +38,7 @@ export function schemaFor(key) {
   const c = CONTRACTS[key];
   return {
     type: 'object',
-    properties: { status: { type: 'string', enum: c.statuses }, ...c.fields },
+    properties: { status: { type: 'string', enum: c.statuses }, ...c.fields, ...blockedInfo },
     required: ['status', ...c.required],
     additionalProperties: false,
   };
@@ -53,7 +56,7 @@ export function normalizeResult(key, raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, error: 'result is not an object' };
   if (!c.statuses.includes(raw.status)) return { ok: false, error: `status must be one of ${c.statuses.join(', ')}` };
   const value = { status: raw.status };
-  for (const [name, type] of Object.entries(c.fields)) {
+  for (const [name, type] of Object.entries({ ...c.fields, ...blockedInfo })) {
     const v = raw[name];
     if (type === str) {
       if (v !== undefined && typeof v !== 'string') return { ok: false, error: `${name} must be a string` };
@@ -62,8 +65,10 @@ export function normalizeResult(key, raw) {
       if (v !== undefined && !Array.isArray(v)) return { ok: false, error: `${name} must be a list` };
       value[name] = (v ?? []).filter((x) => typeof x === 'string' && x.trim()).map((x) => clip(x.trim())).slice(0, MAX_ITEMS);
     }
-    if (c.required.includes(name) && type === str && !value[name]) return { ok: false, error: `${name} is required` };
-    if (c.required.includes(name) && type !== str && v === undefined) return { ok: false, error: `${name} is required` };
+    // A blocked role may not know the stage's usual fields yet: it only needs to say why (summary).
+    const mustHave = c.required.includes(name) && (raw.status !== 'blocked' || name === 'summary');
+    if (mustHave && type === str && !value[name]) return { ok: false, error: `${name} is required` };
+    if (mustHave && type !== str && v === undefined) return { ok: false, error: `${name} is required` };
   }
   if (key === 'qa' && value.status === 'fail' && value.failures.length === 0) return { ok: false, error: 'a failing QA result must list its failures' };
   if (key === 'plan' && value.status === 'complete' && !value.goal) return { ok: false, error: 'goal is required' };

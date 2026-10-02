@@ -1,6 +1,6 @@
 import { ROLE_IDS } from './roles.js';
-import { canTransition, forwardStage, isTerminal, ownerOf } from './stages.js';
-import { canChangeStatus, createAgent } from './agents.js';
+import { STAGES, canTransition, forwardStage, isTerminal, ownerOf } from './stages.js';
+import { AGENT_STATUSES, canChangeStatus, createAgent } from './agents.js';
 import { createEmitter } from './events.js';
 
 export class WorkflowError extends Error {
@@ -17,6 +17,11 @@ export const isHandoff = (r) => Boolean(r.fromRole && r.toRole && r.fromRole !==
 const clone = (o) => structuredClone(o);
 const text = (v) => typeof v === 'string' && v.trim() !== '';
 
+const TASK_STATUSES = ['queued', 'in_progress', 'blocked', 'interrupted', 'completed', 'failed', 'cancelled'];
+
+/** Fields added after Phase 3; restored tasks from older records get these defaults. */
+const taskDefaults = () => ({ pause: null, pauses: [], cancellation: null });
+
 /**
  * The in-memory ATLAS workflow engine: tasks, one agent per role, the SDLC transitions between
  * them, and the events that describe every change. Deterministic given `now`; no I/O.
@@ -28,8 +33,16 @@ const text = (v) => typeof v === 'string' && v.trim() !== '';
  * An agent holds at most one task. Work handed to a busy role waits and is picked up first-in,
  * first-out when that role's agent frees up — so `handoff_started` (work sent) and
  * `handoff_completed` (work picked up) coincide when the receiver is free and not otherwise.
+ *
+ * A task can pause without leaving its stage: `blocked` (its role needs a human answer) or
+ * `interrupted` (ATLAS stopped while it was running). `task.pause` describes the current pause and
+ * `task.pauses` keeps the history; paused tasks are never picked up or continued automatically —
+ * only an explicit `resume` (or the agent starting work again) ends the pause.
+ *
+ * `restore` (a previous `snapshot()`) rebuilds the engine after a restart: tasks, agents, the
+ * event `seq`, queue order and handoffs still waiting for their receiver.
  */
-export function createWorkflow({ now = () => Date.now(), maxQaAttempts = 3 } = {}) {
+export function createWorkflow({ now = () => Date.now(), maxQaAttempts = 3, restore = null } = {}) {
   if (!Number.isInteger(maxQaAttempts) || maxQaAttempts < 1) throw new WorkflowError('invalid_input', 'maxQaAttempts must be a positive integer');
   const emitter = createEmitter();
   const tasks = new Map();
@@ -38,6 +51,48 @@ export function createWorkflow({ now = () => Date.now(), maxQaAttempts = 3 } = {
   const queueOrder = new Map(); // taskId → order it joined its current owner's queue
   const openHandoff = new Map(); // taskId → handoff record not yet picked up
   let seq = 0, taskCount = 0, queueCount = 0;
+  if (restore) restoreFrom(restore);
+
+  function restoreFrom(snap) {
+    const bad = (why) => { throw new WorkflowError('invalid_snapshot', `cannot restore: ${why}`); };
+    if (!snap || typeof snap !== 'object') bad('not an object');
+    if (!Number.isInteger(snap.seq) || snap.seq < 0) bad('seq must be a non-negative integer');
+    if (!Array.isArray(snap.tasks)) bad('tasks must be a list');
+    for (const raw of snap.tasks) {
+      if (!raw || !text(raw.id) || !text(raw.title) || tasks.has(raw.id)) bad(`task ${raw?.id ?? '?'} is missing or duplicated`);
+      if (!STAGES.includes(raw.stage)) bad(`task ${raw.id} has unknown stage ${raw.stage}`);
+      if (!TASK_STATUSES.includes(raw.status)) bad(`task ${raw.id} has unknown status ${raw.status}`);
+      const task = { ...taskDefaults(), ...structuredClone(raw) };
+      if (task.owner !== ownerOf(task.stage)) bad(`task ${raw.id}: owner ${task.owner} does not own ${task.stage}`);
+      tasks.set(task.id, task);
+    }
+    for (const raw of snap.agents ?? []) {
+      if (!agents.has(raw?.role) || raw.id !== raw.role || !AGENT_STATUSES.includes(raw.status)) bad(`agent ${raw?.id ?? '?'} is invalid`);
+      agents.set(raw.role, { ...createAgent(raw.role, start), ...structuredClone(raw) });
+    }
+    // Agents and tasks must agree on who holds what; anything inconsistent is released, not guessed.
+    for (const agent of agents.values()) {
+      const t = agent.taskId ? tasks.get(agent.taskId) : null;
+      if (agent.status !== 'idle' && (!t || isTerminal(t.stage) || t.assignee !== agent.id || t.owner !== agent.role)) {
+        Object.assign(agent, { status: 'idle', taskId: null, action: null, error: null });
+      }
+    }
+    for (const t of tasks.values()) {
+      if (isTerminal(t.stage) || !t.assignee) continue;
+      const agent = agents.get(t.assignee);
+      if (!agent || agent.taskId !== t.id) { t.assignee = null; if (t.status === 'in_progress') t.status = 'queued'; }
+    }
+    [...tasks.values()]
+      .filter((t) => !isTerminal(t.stage) && !t.assignee)
+      .sort((a, b) => a.stageEnteredAt - b.stageEnteredAt || a.createdAt - b.createdAt)
+      .forEach((t) => {
+        queueOrder.set(t.id, ++queueCount);
+        const last = t.history.at(-1);
+        if (last && isHandoff(last) && last.toStage === t.stage) openHandoff.set(t.id, last);
+      });
+    seq = snap.seq;
+    taskCount = tasks.size;
+  }
 
   // One delivery queue: if a listener issues a command while events are being delivered, its events
   // are delivered after the current ones, so delivery order always equals `seq` order.
@@ -111,7 +166,7 @@ export function createWorkflow({ now = () => Date.now(), maxQaAttempts = 3 } = {
     if (agent.status !== 'idle') return;
     let next = null;
     for (const t of tasks.values()) {
-      if (t.owner === role && !t.assignee && !isTerminal(t.stage) && (!next || queueOrder.get(t.id) < queueOrder.get(next.id))) next = t;
+      if (t.owner === role && t.status === 'queued' && !t.assignee && (!next || queueOrder.get(t.id) < queueOrder.get(next.id))) next = t;
     }
     if (!next) return;
     next.assignee = agent.id;
@@ -135,6 +190,7 @@ export function createWorkflow({ now = () => Date.now(), maxQaAttempts = 3 } = {
     const previous = task.assignee ? agents.get(task.assignee) : null;
 
     task.history.push(record);
+    if (isTerminal(to)) closePause(task, at, to);
     Object.assign(task, { stage: to, owner: toRole, assignee: null, stageEnteredAt: at, updatedAt: at });
     task.status = isTerminal(to) ? to : 'queued';
     if (!isTerminal(to)) queueOrder.set(task.id, ++queueCount);
@@ -149,8 +205,16 @@ export function createWorkflow({ now = () => Date.now(), maxQaAttempts = 3 } = {
     }
     if (to === 'completed') emit('task_completed', task.id, { attempts: task.attempt, qaCycles: task.qaResults.length });
     if (to === 'failed') emit('task_failed', task.id, { reason, stage: from });
+    if (to === 'cancelled') emit('task_cancelled', task.id, { reason, stage: from });
     pickUp(toRole, ctx); // the receiver first, for continuity of this task…
     if (previous && previous.role !== toRole) pickUp(previous.role, ctx); // …then the freed agent's own queue
+  }
+
+  /** End the current pause (if any), keeping it in the task's pause history. */
+  function closePause(task, at, outcome, extra = {}) {
+    if (!task.pause) return;
+    task.pauses.push({ ...task.pause, endedAt: at, outcome, ...extra });
+    task.pause = null;
   }
 
   // ---- commands ----
@@ -171,7 +235,7 @@ export function createWorkflow({ now = () => Date.now(), maxQaAttempts = 3 } = {
     const task = {
       id: taskId, title: title.trim(), description, acceptanceCriteria: [...acceptanceCriteria],
       status: 'queued', stage: 'planning', owner: ownerOf('planning'), assignee: null,
-      attempt: 1, qaResults: [], failure: null, history: [],
+      attempt: 1, qaResults: [], failure: null, history: [], ...taskDefaults(),
       createdAt: at, updatedAt: at, stageEnteredAt: at,
     };
     tasks.set(taskId, task);
@@ -181,13 +245,15 @@ export function createWorkflow({ now = () => Date.now(), maxQaAttempts = 3 } = {
     return task;
   });
 
-  /** The owner's agent starts (or resumes, from waiting/blocked) work on its current stage. */
+  /** The owner's agent starts (or resumes, from waiting/blocked/interrupted) work on its current stage. */
   const startWork = command((ctx, taskId, { action = null } = {}) => {
     const task = openTask(taskId);
     const agent = holder(task);
     statusChange(agent, 'working');
     const resumedFrom = agent.status;
     setAgent(agent, ctx.at, { status: 'working', action, error: null });
+    if (task.pause) closePause(task, ctx.at, 'resumed', { mode: 'startWork' });
+    task.status = 'in_progress';
     task.updatedAt = ctx.at;
     ctx.emit('agent_started', taskId, { agent: clone(agent), resumedFrom });
     return task;
@@ -204,14 +270,76 @@ export function createWorkflow({ now = () => Date.now(), maxQaAttempts = 3 } = {
     return task;
   });
 
-  const block = command((ctx, taskId, { reason } = {}) => {
+  /**
+   * The working agent cannot continue without a human: the task pauses as `blocked` (keeping its
+   * stage), with the reason, an optional question and suggested actions for the person.
+   */
+  const block = command((ctx, taskId, { reason, question = null, suggestedActions = [] } = {}) => {
     required(reason, 'reason');
+    if (question !== null && typeof question !== 'string') throw new WorkflowError('invalid_input', 'question must be a string');
+    if (!Array.isArray(suggestedActions) || !suggestedActions.every(text)) throw new WorkflowError('invalid_input', 'suggestedActions must be non-empty strings');
     const task = openTask(taskId);
     const agent = holder(task);
     statusChange(agent, 'blocked');
     setAgent(agent, ctx.at, { status: 'blocked', error: { message: reason, at: ctx.at } });
+    task.status = 'blocked';
+    task.pause = {
+      kind: 'blocked', role: agent.role, stage: task.stage, reason, question: question?.trim() || null,
+      suggestedActions: [...suggestedActions], response: null, respondedAt: null, at: ctx.at,
+    };
     task.updatedAt = ctx.at;
-    ctx.emit('agent_blocked', taskId, { agent: clone(agent), reason });
+    ctx.emit('agent_blocked', taskId, { agent: clone(agent), reason, pause: clone(task.pause) });
+    return task;
+  });
+
+  /** A person answers a blocked task's question. The task stays paused until it is resumed. */
+  const respond = command((ctx, taskId, { response } = {}) => {
+    required(response, 'response');
+    const task = openTask(taskId);
+    if (task.pause?.kind !== 'blocked') throw new WorkflowError('not_blocked', `task ${taskId} is not waiting for a response`);
+    Object.assign(task.pause, { response: response.trim(), respondedAt: ctx.at });
+    task.updatedAt = ctx.at;
+    ctx.emit('intervention_responded', taskId, { pause: clone(task.pause) });
+    return task;
+  });
+
+  /**
+   * ATLAS stopped while this task was open (shutdown or crash): pause it as `interrupted` so nothing
+   * continues until someone decides. The holding agent (if any) shows as interrupted.
+   */
+  const interrupt = command((ctx, taskId, { reason } = {}) => {
+    required(reason, 'reason');
+    const task = openTask(taskId);
+    if (task.pause) throw new WorkflowError('already_paused', `task ${taskId} is already ${task.pause.kind}`);
+    const agent = task.assignee ? agents.get(task.assignee) : null;
+    if (agent) statusChange(agent, 'interrupted');
+    if (agent) {
+      setAgent(agent, ctx.at, { status: 'interrupted', action: null, error: { message: reason, at: ctx.at } });
+      ctx.emit('agent_interrupted', taskId, { agent: clone(agent), reason });
+    }
+    queueOrder.delete(taskId);
+    task.status = 'interrupted';
+    task.pause = { kind: 'interrupted', role: task.owner, stage: task.stage, reason, at: ctx.at };
+    task.updatedAt = ctx.at;
+    ctx.emit('task_interrupted', taskId, { reason, stage: task.stage, role: task.owner });
+    return task;
+  });
+
+  /**
+   * A person decides to continue a paused task (`mode` records how: resume or retry). The pause
+   * ends; a task whose agent still holds it is ready to start work again, one that was waiting for
+   * its role rejoins that role's queue.
+   */
+  const resume = command((ctx, taskId, { mode = 'resume', note = null } = {}) => {
+    const task = openTask(taskId);
+    if (!task.pause) throw new WorkflowError('not_paused', `task ${taskId} is not paused`);
+    const from = task.pause.kind;
+    closePause(task, ctx.at, 'resumed', { mode, note });
+    task.status = task.assignee ? 'in_progress' : 'queued';
+    if (!task.assignee) queueOrder.set(taskId, ++queueCount);
+    task.updatedAt = ctx.at;
+    ctx.emit('task_resumed', taskId, { mode, note, from, stage: task.stage });
+    if (!task.assignee) pickUp(task.owner, ctx);
     return task;
   });
 
@@ -265,7 +393,7 @@ export function createWorkflow({ now = () => Date.now(), maxQaAttempts = 3 } = {
     return task;
   });
 
-  /** Explicit abort from any open stage (e.g. Operations cancels, or a stage can't be completed). */
+  /** Explicit abort from any open stage (a stage can't be completed, or a person abandons the task). */
   const failTask = command((ctx, taskId, { reason, meta = null } = {}) => {
     required(reason, 'reason');
     const task = openTask(taskId);
@@ -274,8 +402,17 @@ export function createWorkflow({ now = () => Date.now(), maxQaAttempts = 3 } = {
     return task;
   });
 
+  /** A person stops the task, from any open stage (running, queued, blocked or interrupted). */
+  const cancelTask = command((ctx, taskId, { reason = 'Cancelled by user', meta = null } = {}) => {
+    required(reason, 'reason');
+    const task = openTask(taskId);
+    task.cancellation = { reason, stage: task.stage, at: ctx.at };
+    transition(task, 'cancelled', ctx, { reason, meta });
+    return task;
+  });
+
   return {
-    createTask, startWork, wait, block, reportProgress, completeStage, qaPass, qaFail, failTask,
+    createTask, startWork, wait, block, respond, interrupt, resume, reportProgress, completeStage, qaPass, qaFail, failTask, cancelTask,
     /** Subscribe to events; returns an unsubscribe function. */
     on: (fn) => emitter.on(fn),
     getTask: (id) => clone(taskOf(id)),
